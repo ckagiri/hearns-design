@@ -1,0 +1,59 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv run pytest *)",
+      "Bash(uv run ruff *)",
+      "Bash(uv run mypy *)",
+      "Bash(uv sync)",
+      "Bash(uv add *)",
+      "Bash(make check-static)",
+      "Bash(git status *)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git add *)",
+      "Bash(psql -c *)",
+      "Read(docs/**)",
+      "Read(migrations/**)",
+      "Read(queries/**)"
+    ],
+    "ask": [
+      "Bash(git push *)",
+      "Bash(docker *)",
+      "Bash(dropdb *)",
+      "Bash(createdb *)"
+    ],
+    "deny": [
+      "Read(.env)",
+      "Edit(.env)",
+      "Edit(migrations/**)",
+      "Edit(docs/adr/**)",
+      "Bash(rm -rf *)",
+      "Bash(pg_dump *)",
+      "Bash(git push --force *)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/guard_invariants.py"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/format_python.py"
+          }
+        ]
+      }
+    ]
+  }
+}

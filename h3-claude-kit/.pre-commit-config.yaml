@@ -1,0 +1,38 @@
+# Claude Code hooks only guard Claude's edits. This guards yours.
+# Install once:  uv tool install pre-commit && pre-commit install
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: detect-private-key
+
+  - repo: local
+    hooks:
+      # The same invariants the Claude Code hook enforces, applied to the staged diff,
+      # so a hand edit cannot bypass what an agent edit cannot.
+      - id: h3-invariants
+        name: H3 invariants (clock, vocabulary, generated files)
+        entry: python3 hooks/check_invariants.py
+        language: system
+        pass_filenames: true
+        types_or: [python, sql]
+
+      - id: h3-no-new-design-docs
+        name: rule 63 — no new design documents
+        entry: python3 hooks/check_no_new_docs.py
+        language: system
+        pass_filenames: true
+        files: ^docs/.*\.md$
