@@ -54,6 +54,15 @@ mis-typed. Say so — return `misclassified` — and it is replaced by a split. 
 split without inventing facts is not too big; it is under-specified, and the outcome is
 `needs_context`.
 
+**A split may conclude there is nothing to split.** If no two parts of the work have separable
+acceptance decisions, the split ends `atomic` and emits nothing. The original card is restored as
+`execute` and cannot refuse the same way twice; a second `misclassified` on it is a `spec_conflict`,
+because the system has now been told two contradictory things about one card and that is a human's
+call.
+
+Emitting nothing and saying why is a legitimate answer. Emitting one child that is a copy of the
+parent is not — that is a level of nesting pretending to be a decomposition.
+
 ---
 
 ## 2. What makes something a story
@@ -255,8 +264,13 @@ tuned against from inside a workspace. Rungs 1 and above run in the workspace, s
 them iteratively and reach the files they run — which means rung 0 is what polices the rungs above
 it, not a cheaper version of them. Put the domain's real oracle there.
 
+**A test card carries named assertions**, not prose — an example table where the behaviour is
+data-shaped, a property where the claim is an invariant, a bare named id where neither fits. Rung 0
+checks that one test exists per id, named for it, failing on its own assertion, with every table row
+present as a case. Five assertion ids per card; more means the card is two. See `assertions.md`.
+
 **Where the behaviour has no stateable semantic** — a rename, a config change, a doc update — one
-card. Say so in the contract rather than manufacturing an assertion.
+card, **and no assertions**. Say so in the contract rather than manufacturing one.
 
 A test that asserts nothing but is named as though it does is a defect, and it is caught statically.
 

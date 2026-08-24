@@ -370,6 +370,21 @@ A board comes into existence one of two ways, and both are permanent.
 gates. A board that would be rejected coming out of a splitter is rejected coming out of a file —
 which is what makes seed files usable as test fixtures against the gates themselves.
 
+### The ratchet, stated precisely
+
+The kind ratchet is not *a split must emit more than one child*. It is:
+
+> **A split must not emit exactly one child that is a copy of its parent.**
+
+That case is a level of nesting wearing a decomposition's clothes: the tree is deeper, nothing is
+smaller, two model calls are spent, and the ledger records a split that succeeded. Row count plus a
+similarity check against the parent's contract catches it.
+
+A split that finds the work genuinely atomic takes the other exit — outcome `atomic`, emitting
+nothing. See the working agreement. **The `atomic` rate is the negative result of the refusal
+mechanism**, and it is worth watching in both directions: silence means executors never refuse
+(R-new-7), and a high `atomic` rate means they refuse work they could have done.
+
 ### Two more emit gates: is this story one slice, and is it reviewable
 
 **Acceptance-criterion count is not a size signal.** A registration story with six criteria — email
@@ -390,6 +405,17 @@ def gate_story_reviewable(story):
     if len(expand(story.touch)) > 12:
         raise SplitRejected("story_too_wide", story.id)
 ```
+
+**The check runs over the cards a split proposes, not over the cards a story eventually contains.**
+Cards created in response to failure — an `integrate` card after a merge conflict, a gap card from
+`done_with_concerns`, a defect card found while the story is open — are not part of the slice test.
+They are not part of the decomposition either; they are what happened to it afterwards. A check
+running continuously would eventually fail every story and would be measuring incident history
+rather than the split.
+
+The consequence is worth accepting rather than engineering around: **a story that accumulates six
+defect cards mid-flight really has become two stories, and no gate will say so.** That is yours to
+catch at review, and killing it with that reason is the feedback loop that tightens the gate.
 
 A story whose cards converge on one path is one component and passes. A story that bolts an audit
 trail onto a profile update has cards touching a table nothing else touches, with no dep edge back —

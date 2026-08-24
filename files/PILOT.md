@@ -196,6 +196,7 @@ ladder:
       - mypy src
       - python tools/placeholder_scan.py     # TODO / pass / NotImplementedError in tests/
       - python tools/commit_type_check.py    # derived type matches the card
+      - python tools/assertion_check.py      # one test per assertion id, rows present as cases
       - python tools/api_diff.py             # produces[] symbols changed by this diff
 
   - rung: 1
@@ -336,6 +337,12 @@ emits a **test card** and an **implementation card that depends on it**. The tes
 criterion is that the test *fails* — a test passing against an empty implementation never guarded
 anything, so the harness checks for red before marking it done.
 
+**The test card carries assertions, not prose.** An example table where the behaviour is data-shaped,
+a property where the claim is an invariant, a bare named id where neither fits. `assertion_check.py`
+then verifies red **for the right reason**: one test per id, named for it, failing on its own
+assertion, and every table row present as a parametrize case. That last check is what stops the model
+choosing easy values — a row sitting in the table and missing from the test is caught by counting.
+
 That pairing plus day 4's tool-set gate is what makes rungs 1 and 2 mean anything. Neither works
 alone: without test-first the assertions are written to pass, and without the tool gate they get
 edited until they do.
@@ -382,6 +389,7 @@ belong in code.
 - a split whose stories drop one of the twelve behaviours
 - a story you `kill` twice
 - a card that changes an interface another epic consumes → `!` appended without being asked
+- a card that refuses work it could do → split returns `atomic`, card restored and locked
 - a commit whose type does not match its card → rung 0 rejects it
 
 If everything succeeds you have learned nothing.
@@ -422,6 +430,16 @@ attempt ends in one of five:
 | `misclassified` | replace this card with a `split` of the same intent, parent intact |
 | `needs_context` | open a row in `questions`, card waits |
 | `spec_conflict` | `blocked`, loud, with the conflicting clauses named |
+
+And one outcome that only a `split` card can return:
+
+| Outcome | What the harness does |
+|---|---|
+| `atomic` | emit nothing; restore the original card as `execute` with `misclassify_locked` set |
+
+Without it, a splitter that correctly finds the work atomic gets rejected by the ratchet, retries,
+and blocks after three rounds — **for having been right.** The lock matters too: a restored card that
+refuses again is a `spec_conflict`, not a second trip round the loop.
 
 Add one paragraph to `execute-v0.md` giving permission to refuse, and the criterion to refuse
 against: *could a reviewer sensibly accept one half of this and reject the other?*
@@ -485,6 +503,7 @@ about the ladder, found the only way it can be.
 | Commit shape | Type counts across the week. `style` should be zero; `revert` should be zero |
 | Interface churn | Breaking changes detected, and whether you accepted each one |
 | Refusal | `misclassified`, `needs_context`, `done_with_concerns` counts. **A zero in any is a finding** |
+| Refusal quality | `atomic` as a share of `misclassified`. High means cards refuse work they could do |
 
 Every number caveated: n≈30, one workload, one crude prompt, no controls. Policy §3.1 says depth is
 unjustified until a fidelity number exists. This is not a good version of it. It is the first one.
