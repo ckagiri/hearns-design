@@ -14,6 +14,7 @@ Sections 2 and 3 depend on §5.1's cache-scope table being correct, which is unv
   and are the one defensible import.
 - §3.7 added — two hazards on import: `agents/` and `SKILL.md`'s workflow.
 - Open questions 2 and 4 merged; they are one experiment.
+- Naming pass, 2026-11-03: each layer gets one fixed name (§0), and open questions 5 and 6 added.
 
 ---
 
@@ -29,6 +30,17 @@ Three questions that turn out to be one question.
 
 The single question underneath: **what is scoped per-kind and what is scoped per-card?**
 Everything below falls out of that.
+
+### Layer names
+
+| Layer | Name | Layer | Name | Layer | Name |
+|---|---|---|---|---|---|
+| 0 | `system` | 3 | `tools` | 6 | `deps` |
+| 1 | `house` | 4 | `orientation` | 7 | `retry` |
+| 2 | `skills` | 5 | `task` | 8 | `checks` |
+
+The numbers stay for now; they are ids, not the send order (open question 6). `task` follows core
+§3.2: `task` in code, *card* in prose, so prose may still say "the card layer".
 
 ---
 
@@ -143,19 +155,19 @@ become acceptable by being YAML.
 §5.1's scope column reads as bookkeeping. It is the cost model.
 
 ```
- LAYER   CONTENT                    SCOPE        WRITTEN         READ
- ─────────────────────────────────────────────────────────────────────────────
-   0     role, contract, outcomes   per kind     once per pin    every card
-   1     house preamble             per house    once per pin    every card
-   2     skills                     PER KIND     once per pin    every card
- ═════════════════════════════════════════════════════════════════════════════
-   3     tools                      per kind     once per pin    every card
-   4     orientation                per run      once per run    every card
- ─────────────────────────────────────────────────────────────────────────────
-   5     the card                   PER CARD     every card      once
-   6     dependencies               PER CARD     every card      once
-   7     previous attempt           PER ATTEMPT  every attempt   once
-   8     checks                     per kind     once per pin    every card
+ LAYER   NAME          CONTENT                    SCOPE        WRITTEN         READ
+ ───────────────────────────────────────────────────────────────────────────────────────────
+   0     system        role, contract, outcomes   per kind     once per pin    every card
+   1     house         house preamble             per house    once per pin    every card
+   2     skills        skills                     PER KIND     once per pin    every card
+ ═══════════════════════════════════════════════════════════════════════════════════════════
+   3     tools         tools                      per kind     once per pin    every card
+   4     orientation   orientation                per run      once per run    every card
+ ───────────────────────────────────────────────────────────────────────────────────────────
+   5     task          the card                   PER CARD     every card      once
+   6     deps          dependencies               PER CARD     every card      once
+   7     retry         previous attempt           PER ATTEMPT  every attempt   once
+   8     checks        checks                     per kind     once per pin    every card
 ```
 
 Above the double line: **written once, amortised across every card of that kind, for the
@@ -182,7 +194,7 @@ schema. The cost argument and the correctness argument point the same way.
                         │                     │
                    ┌────┴────┐    ┌───────────┴───────────┐
                    │ LAYER 0 │    │ True of every repo    │
-                   │  role   │    │ doing this domain, or │
+                   │ system  │    │ doing this domain, or │
                    └─────────┘    │ only of THIS repo?    │
                                   └───────────┬───────────┘
                               every repo ─────┴───── this repo
@@ -509,3 +521,10 @@ question, and relocating it to the splitter is the correct answer rather than a 
    cheapest thing in this document to test: run five real cards with and without the
    `18-19` delta in `execute[]` and count version-inappropriate constructs. If the delta
    changes nothing, §3.6's exception closes and nothing is imported at all.
+
+5. **[new] What is the cache scope of layers 0 and 3?** Policy §5.1 says per role; §2.1 here says
+   per kind. Recommendation: per kind, because one role can serve two kinds. Not settled here.
+
+6. **[new] Where does layer 8 belong?** `jig-sketch.py` sends it before layer 4, so it sits in the
+   cached prefix; the docs list it last. Checks read last may get more attention, which is
+   measurable. Do not renumber until that is measured.

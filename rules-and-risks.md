@@ -209,7 +209,7 @@ deleted one.
 |---|---|
 | 92 | Every run carries `project`, `intent_digest`, `spec_digest` and the config pin. Every task carries `project` and `summary_schema_version`. |
 | 93 | A summary schema change bumps the version and never rewrites history. |
-| 94 | `tasks`, `runs`, `reviews`, `notes`, `tool_audit` are never deleted. Content is tiered and expired; rows are not. |
+| 94 | `tasks`, `task_attempts`, `runs`, `reviews`, `notes`, `tool_audit` are never deleted. Content is tiered and expired; rows are not. |
 | 95 | Nothing is promoted to a note automatically. Promotion is a human verb at the gate. |
 | 96 | A note is superseded, never edited. |
 | 97 | Check logs are truncated on write. Success keeps the tail; failure keeps the first traceback and the tail. |
@@ -356,7 +356,7 @@ deleted one.
 
 | # | Risk | Mitigation / detector |
 |---|---|---|
-| R57 | **A worker heartbeats while making no progress.** The lease never expires, so the reaper never fires. Liveness is signalled; progress is not. | **None.** The deadline bounds the damage; nothing detects the stall inside it. Recorded per rule 62 as a residual. Core §5.4 states why one reaper is otherwise sufficient; this is the case it does not cover, and the case the comparable's watchdog chain exists for. |
+| R57 | **A worker heartbeats while making no progress.** The lease never expires, so lease expiry never fires. Liveness is signalled; progress is not. | **Partial, ADR-0007.** A silent loop is caught by the reaper's stall clause, whose own detector is `stalled` attempts that succeed on retry. **A busy loop is still a residual per rule 62:** a loop that keeps making calls is never silent, and only the turn limit and the deadline bound it. Core §5.4 states why one reaper is otherwise sufficient; this is the case it does not cover, and the case the comparable's watchdog chain exists for. |
 | R58 | **Parallelism is not a differentiator.** Policy §10 asserted it against a sequential controller; the current comparable runs work in parallel with an equivalent claim protocol. | §10 corrected 2026-08-18. One differentiator remains and it is the primary hypothesis, so step 7 has no fallback claim. |
 | R59 | **Effort labels do not mean the same thing across vendors.** An abstract `high` renders to a different flag, and a different scale, per harness. | Rule 134: record the *resolved* flags in the pin, never the choice name. R48's independence requirement depends on this. |
 | R60 | **The card runtime assembles the prompt, so its version is part of what a card saw.** A library upgrade changes the system it ran under with nothing in the design moving. | Runtime pinned in the lockfile and inside `config_hash`; an upgrade is a run boundary. ADR-0004, policy §1.6. |
@@ -468,6 +468,7 @@ have never been observed** — and rules 121 and 132 are the model for what to d
 Append-only. One line per change. Date, ADR where one exists, what moved.
 
 ```
+2026-11-03  ADR-0007  task_attempts; reaper stall clause, backoff, collects failed; workspace failure table; Budget as a claim query; rule 94; R57 now partial
 2026-08-18  ADR-0004  card runtime adopted below the card boundary; core §8 cache is its model interface
 2026-08-18  —         policy §1.6 added — the loop §1.5 acknowledged but nobody specified
 2026-08-18  —         rule 135; R60, R61 — tool sets as gates, runtime in the pin, context exhaustion

@@ -553,7 +553,8 @@ editing.
 
 **Amend §5.4 (the reaper) and §4.1 (lease record):**
 
-- The lease row carries the container id.
+- The container's name derives from the card id and attempt (core §6, ADR-0007), so the reaper can
+  find it even if the worker died before recording anything.
 - The reaper's order is **kill, then requeue.** Requeue-first gives you two live writers.
 - After the kill, the worktree is hard-reset to the card's base commit before the retry claims it.
 

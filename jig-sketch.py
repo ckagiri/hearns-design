@@ -3,6 +3,7 @@ Jig runner — happy-path sketch, v4.
 
 Pseudocode, not runnable. Elisions marked `...`.
 Section refs are to harness-core-v3 (§C) and harness-policy-v3 (§P).
+Vocabulary: `task` in code = card in prose. Same thing (§C3.2).
 Rewrite of v2; v4 adds the registries (tools, skills, checks, hooks), the
 emit-time edge gate, and the dep predicate. Diffs at the foot.
 
@@ -74,7 +75,7 @@ FREE_RETRY = {FailureClass.RATE_LIMITED, FailureClass.OVERLOADED, FailureClass.T
 # available attempt is to block too, after a workspace build, a container, a
 # template clone and a model call.
 #
-# The alternative — let it through and have dep_summaries render a warning —
+# The alternative — let it through and have render_deps_layer render a warning —
 # is rule 25's anti-pattern: an instruction the card is asked to honour rather
 # than a state it was never given. The predicate is the same gate for free and
 # cannot be talked out of.
@@ -204,7 +205,8 @@ class ReplayMiss(Exception):     ...
 
 
 # ══════════════════════════════════════════════════════════════════════
-# 2. Prompt assembly.  Harness-owned.  Jigs contribute layers 0–3 only.
+# 2. Prompt assembly.  Harness-owned.  Jigs contribute system, house and tools;
+#    skills and checks are looked up by kind.
 #    Layer order is load-bearing twice: cache prefix and attention (§P5.1).
 #    Blocks stay BLOCKS all the way to the wire — see build_request.
 # ══════════════════════════════════════════════════════════════════════
@@ -217,19 +219,25 @@ class Block:
 
 STABLE = {"role", "house", "kind", "run"}   # cacheable across cards
 
+# One fixed name per layer. The number is an id, not the send order: see render().
+LAYER_NAMES = {
+    0: "system", 1: "house", 2: "skills", 3: "tools", 4: "orientation",
+    5: "task", 6: "deps", 7: "retry", 8: "checks",
+}
+
 
 def render(role, task, deps, orientation, last_attempt) -> list[Block]:
     j = role.jig
     b = [
-        Block(0, "role",    j.system),                       # + the outcome enum, verbatim
-        Block(1, "house",   j.preamble),
-        Block(2, "kind",    load_skills(SKILLS[task.kind])),   # ← by KIND, not by jig
-        Block(3, "role",    tool_schemas_text(j.tools)),
-        Block(8, "kind",    check_definitions(task.kind)),   # ← MOVED UP. see note 1 at foot.
-        Block(4, "run",     orientation + constraints_verbatim(task.root_id)),
-        Block(5, "card",    card(task)),
-        Block(6, "card",    dep_summaries(deps)),
-        Block(7, "attempt", last_attempt_output(last_attempt)),   # '' when attempts == 0
+        Block(0, "role",    read(j.system_ref)),             # system: + the outcome enum, verbatim
+        Block(1, "house",   j.preamble),                     # house
+        Block(2, "kind",    load_skills(SKILLS[task.kind])),   # skills ← by KIND, not by jig
+        Block(3, "role",    tool_schemas_text(j.tools)),     # tools
+        Block(8, "kind",    check_definitions(task.kind)),   # checks ← MOVED UP. see note 1 at foot.
+        Block(4, "run",     orientation + constraints_verbatim(task.root_id)),   # orientation
+        Block(5, "card",    render_task_layer(task)),        # task
+        Block(6, "card",    render_deps_layer(deps)),        # deps
+        Block(7, "attempt", render_retry_layer(last_attempt)),   # retry: '' when attempts == 0
     ]
 
     # Static invariant, milliseconds, high value: the stable prefix must be
@@ -288,8 +296,10 @@ def load_skills(names: list[str]) -> str:
     return "\n\n".join(read(f"skills/{n}.md") for n in names)
 
 
-def card(task) -> str:
-    """NOTE what is absent: the attempt budget.
+def render_task_layer(task) -> str:
+    """Layer 5. Formats the task's row as text; it creates and runs nothing.
+
+    NOTE what is absent: the attempt budget.
 
     v2 passed `attempt N of M`. That is the wrong half of the retry story —
     it invites budget-gaming and last-attempt behaviour change, while
@@ -305,7 +315,7 @@ def card(task) -> str:
     """
 
 
-def last_attempt_output(last) -> str:
+def render_retry_layer(last) -> str:
     if last is None:
         return ""
     return f"""
@@ -316,7 +326,7 @@ def last_attempt_output(last) -> str:
     """
 
 
-def dep_summaries(deps) -> str:
+def render_deps_layer(deps) -> str:
     """Layer 6. SUMMARIES, not bodies (§P9.4).
 
     A card that reads its parent's full diff is a card doing its parent's job
@@ -751,7 +761,7 @@ def heartbeat(task, attempt, ttl):
 #   · SATISFIES_DEP = {"done"} — ADR-0006.
 #   · reject_if_edge_carries_nothing — the dual of the collision gate.
 #     (R-new-4)
-#   · dep_summaries sketched: Exposes / decided / full-as-ref, and nothing
+#   · render_deps_layer sketched: Exposes / decided / full-as-ref, and nothing
 #     about the parent's attempts.
 #
 # Still elided, and now conspicuously: the transitive-stall query that

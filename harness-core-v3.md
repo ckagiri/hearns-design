@@ -85,7 +85,7 @@ is an instance, not the definition.
 | `Ledger` | The Postgres access layer: claim, commit, query. |
 | `Jig` | Prompt template + output schema + checks, bound per kind. |
 | `Policy` | Failure class → outcome table. Config, not a process. |
-| `Budget` | Token bucket. May only say *no*. A function, not a process. |
+| `Budget` | A claim-time query over spend (§5.3). May only say *no*. A function, not a process. |
 | `Worker` | An OS process running the claim loop. **Synonymous with process.** |
 
 `Judge` and `Relay` are **deleted** from v2's table. `Judge` moves to an ADR of record (never
@@ -169,6 +169,8 @@ CREATE TABLE tasks (
   lease_holder      text,
   lease_expires_at  timestamptz,               -- per-ATTEMPT: is the worker alive?
   last_heartbeat_at timestamptz,
+  last_progress_at  timestamptz,               -- per-ATTEMPT: has the loop advanced? (§5.4)
+  stall_after       interval,                  -- from role config at claim; NULL disables
   deadline_at       timestamptz,               -- TOTAL wall-clock across all attempts
   attempts          int  NOT NULL DEFAULT 0,   -- also the FENCING TOKEN (§5.5)
   max_attempts      int  NOT NULL DEFAULT 3,
@@ -230,14 +232,34 @@ CREATE INDEX tasks_deadline_idx ON tasks (deadline_at)
   failure of controller-based tools. Absence is a config validation error.
 - **`intent` size cap** enforced by CHECK, not convention. The single most effective guard against
   context accumulation.
-- **Two clocks.** `lease_expires_at` answers *is this worker alive?* and is per-attempt.
-  `deadline_at` answers *has this taken too long overall?* and spans every attempt.
+- **Three clocks.** `lease_expires_at` answers *is this worker alive?* and is per-attempt.
+  `last_progress_at` answers *has its loop gone silent?* and is per-attempt. `deadline_at` answers
+  *has this taken too long overall?* and spans every attempt.
 - **`attempts` is the fencing token.** Monotonic per lease. Not optional — see §5.5.
+- **`failure_class` is the current attempt's.** Claim clears it; `task_attempts` keeps the history.
 - **`outcome` disambiguates `done`.** The predicate does not consult it; §5.2 handles that
   structurally. The value set is policy-owned.
 - **`summary_schema_version`** is written by the jig's output validator, never by a model. A schema
   change bumps it and never rewrites history.
 - **`caused_by`** is the traveler: the sheet stamped at every station.
+
+**Attempts.** One row per delivery, written in the claim's transaction and closed in the transaction
+that ends the attempt. Per-call cost stays in `model_calls`, keyed `(task_id, attempt, seq)`.
+*(ADR-0007.)*
+
+```sql
+CREATE TABLE task_attempts (
+  task_id       text NOT NULL REFERENCES tasks(id),
+  n             int  NOT NULL,     -- tasks.attempts at claim; the fence
+  worker        text NOT NULL,
+  failure_class text,              -- NULL while open and on success
+  check_ref     text,              -- content hash; what retry layer 7 reads
+  diff_ref      text,              -- content hash; NULL if the worker died first
+  started_at    timestamptz NOT NULL DEFAULT now(),
+  ended_at      timestamptz,
+  PRIMARY KEY (task_id, n)
+);
+```
 
 ### 4.2 Runs
 
@@ -248,6 +270,7 @@ CREATE TABLE runs (
   intent_digest text NOT NULL,     -- sha256 of the root intent text
   spec_digest   text,              -- sha256 of the anchor, where one exists
   config_pin    jsonb NOT NULL,
+  max_cost_usd  numeric(12,2),     -- Budget's limit (§5.3); outside the pin; NULL is no limit
   started_at    timestamptz NOT NULL DEFAULT now(),
   ended_at      timestamptz,
   outcome       text               -- 'complete' | 'abandoned' | 'gated'
@@ -292,7 +315,7 @@ considering object storage; it makes the backend question academic for years.
 
 | Class | Policy |
 |---|---|
-| `tasks`, `runs`, `reviews`, `notes`, `tool_audit` | **Never deleted.** |
+| `tasks`, `task_attempts`, `runs`, `reviews`, `notes`, `tool_audit` | **Never deleted.** |
 | `model_cache` | TTL by run |
 | content — diffs, artifacts | long TTL, tiered |
 | content — check and container logs | short TTL, truncated on write |
@@ -371,19 +394,37 @@ WITH candidate AS (
      AND NOT EXISTS (SELECT 1 FROM unnest(t.deps) AS dep(id)
                        JOIN tasks x ON x.id LIKE dep.id || '.%'
                       WHERE x.state NOT IN ('done','quarantined'))
+     AND NOT COALESCE((SELECT sum(m.cost_usd) >= r.max_cost_usd      -- Budget
+                         FROM runs r
+                         JOIN tasks x ON x.root_id = r.root_id
+                         JOIN model_calls m ON m.task_id = x.id
+                        WHERE r.root_id = t.root_id
+                        GROUP BY r.max_cost_usd), false)
    ORDER BY t.priority DESC, t.created_at
    LIMIT 1 FOR UPDATE OF t SKIP LOCKED
+), claimed AS (
+  UPDATE tasks
+     SET state='leased', lease_holder=$3,
+         lease_expires_at = now() + $4::interval,
+         last_progress_at = now(), stall_after = $5::interval,
+         failure_class = NULL,
+         attempts = attempts + 1, updated_at = now()
+    FROM candidate WHERE tasks.id = candidate.id
+  RETURNING tasks.*
+), opened AS (
+  INSERT INTO task_attempts (task_id, n, worker)
+  SELECT id, attempts, $3 FROM claimed
 )
-UPDATE tasks
-   SET state='leased', lease_holder=$3,
-       lease_expires_at = now() + $4::interval,
-       attempts = attempts + 1, updated_at = now()
-  FROM candidate WHERE tasks.id = candidate.id
-RETURNING tasks.*;
+SELECT * FROM claimed;
 ```
 
 `SKIP LOCKED` gives multi-node claiming with no distributed lock. Lease deadlines come from the
 **store's** clock — clock skew between workers is real.
+
+**Budget refuses in the claim, not in `ready(t)`,** which stays a pure function of the graph. Spend is
+summed from `model_calls` against `runs.max_cost_usd`. It is a brake rather than a guarantee: concurrent
+claims see the same sum, and cards already claimed keep spending. Raising the limit changes no pin,
+because it changes nothing a card saw.
 
 **Config drift check, at claim time.** The worker recomputes its own `kind_hash` (§8.1.1) and
 compares it to the run's pinned value. A mismatch **fails loud** and the worker refuses the card
@@ -400,11 +441,22 @@ crash-looping card: a card whose handler kills its worker never records an expli
 ### 5.4 The reaper
 
 ```sql
+-- candidates: dead, silent, or explicitly failed
+SELECT id, attempts FROM tasks
+ WHERE state = 'failed'
+    OR (state = 'leased' AND (lease_expires_at < now()
+                              OR last_progress_at + stall_after < now()));
+
+-- per candidate, after its teardown has run
 UPDATE tasks
-   SET state = CASE WHEN attempts >= max_attempts THEN 'quarantined' ELSE 'pending' END,
+   SET state = (CASE WHEN attempts >= max_attempts THEN 'quarantined' ELSE 'pending' END)::task_state,
+       not_before = now() + LEAST(interval '10 seconds' * power(2, attempts - 1),
+                                  interval '5 minutes'),
        lease_holder = NULL, lease_expires_at = NULL,
-       failure_class = COALESCE(failure_class,'lease_expired'), updated_at = now()
- WHERE state = 'leased' AND lease_expires_at < now();
+       failure_class = COALESCE(failure_class,
+         CASE WHEN lease_expires_at < now() THEN 'lease_expired' ELSE 'stalled' END),
+       updated_at = now()
+ WHERE id = $1 AND attempts = $2 AND state IN ('leased','failed');
 
 UPDATE tasks
    SET state='quarantined', failure_class='deadline_exceeded',
@@ -414,12 +466,21 @@ UPDATE tasks
 ```
 
 Run from any worker on a timer; idempotent. **Lease expiry is the entire crash-recovery story** — an
-explicit error and a dead process collapse to the same path.
+explicit error and a dead process collapse to the same path. Each flip closes the open
+`task_attempts` row in the same transaction, recording the same `failure_class`.
+
+**The stall clause catches silence, not uselessness.** *(ADR-0007.)* The card loop stamps
+`last_progress_at`, fenced, on each model response and each finished tool call; never from the
+heartbeat task, which runs regardless. `stall_after` comes from role config, and config validation
+requires it to exceed the longest tool and model-call timeouts, so a long check is not silence.
+
+**Backoff is set on every requeue,** whatever the class. A retry costs a container, a clone and an
+install, and an immediate one against an outage spends all of a card's attempts in seconds.
 
 **Amended: the reaper kills before it requeues.** Order matters:
 
 ```
-1. kill the container            (the lease row carries its id)
+1. kill the container            (named from the card id and attempt, §6)
 2. drop the workspace database
 3. reset the worktree hard, clean -fdx
 4. flip the row to pending
@@ -427,7 +488,8 @@ explicit error and a dead process collapse to the same path.
 
 Fencing guarantees a stale writer cannot *commit*. It does not guarantee it cannot *write*. Requeue
 first and two live processes edit the same worktree. This closes a failure v2 recorded but did not
-resolve.
+resolve. §6 states what a failure at each step does. `$2` keeps a flip from landing on a newer claim,
+and the state check keeps it from landing on a commit that won the race.
 
 **Why there is no watchdog watching the watchdog.** *(Added 2026-08-18.)* A comparable tool answers
 stall detection with a four-role escalation chain — a watcher that may not kill, an executioner it
@@ -438,24 +500,27 @@ when the reaper itself fails?**
 Three properties make one reaper sufficient here, and they are properties of the substrate rather
 than of the reaper's implementation:
 
-- **It is idempotent and unelected.** It is two `UPDATE`s run from any worker on a timer, not a
+- **It is idempotent and unelected.** It is a few statements run from any worker on a timer, not a
   process with a lifecycle. There is no singleton to die. Every worker running it concurrently is
   the normal case, not a race.
-- **It has no semantic judgement to get wrong.** It fires on `lease_expires_at < now()`, evaluated
-  by Postgres. The comparable's watcher must decide whether an agent is *semantically* stuck —
+- **It has little semantic judgement to get wrong.** It fires on timestamp comparisons evaluated by
+  Postgres. The comparable's watcher must decide whether an agent is *semantically* stuck —
   inferring from stale timestamps whether meaningful work is happening — which is a judgement, so it
   needs a check on its judgement, which needs a check on that. The chain length is a consequence of
-  the first component being fallible in a way a timestamp comparison is not.
+  the first component being fallible in a way a timestamp comparison is not. **The stall clause moves
+  toward that line, and ADR-0007 records it as a cost:** silence can be wrong too. It stays on this
+  side because it asserts only silence, a wrong call costs one attempt, and its check is a query
+  (§10) rather than another watcher.
 - **Failure is inert, not corrupting.** A reaper that never runs leaves cards leased past expiry:
   the board stalls, visibly, and `SELECT count(*) FROM tasks WHERE state='leased' AND
   lease_expires_at < now()` is the detector. It cannot requeue work that is still running, because
   it kills before it requeues, and it cannot admit a stale commit, because fencing rejects it. The
   failure mode is *nothing happens*, which is observable and safe.
 
-**This reopens if a stall is observed that lease expiry does not catch** — a worker holding its lease
-by heartbeating while doing no useful work. That is a real gap: the heartbeat is a liveness signal,
-not a progress signal. It is not currently mitigated, and no detector exists for it (rule 62).
-Recorded as R57.
+**This reopens if a stall is observed that neither clause catches** — a worker heartbeating and
+still making calls while doing no useful work. That is a real gap: both signals say the loop is
+moving, not that it is getting anywhere. The turn limit and `deadline_at` bound it, and no detector
+exists for it (rule 62). Recorded as R57.
 
 ### 5.5 Fencing — not optional
 
@@ -496,9 +561,14 @@ BEGIN;
                    tokens_in=…, tokens_out=…, cost_usd=…, model_used=…,
                    check_latency_ms=…, updated_at=now()
    WHERE id=$1 AND lease_holder=$2 AND attempts=$3;         -- fenced
+  UPDATE task_attempts SET ended_at=now(), check_ref=…, diff_ref=…
+   WHERE task_id=$1 AND n=$3;
   INSERT INTO tasks (…) VALUES … ON CONFLICT (id) DO NOTHING;   -- idempotent append
 COMMIT;
 ```
+
+Every path that ends an attempt closes its row in that path's transaction: commit, failure, reap, and
+drain's early release (as `released`).
 
 **Commit is a harness operation, not a card operation.** The card returns; the harness runs the
 `pre_commit` hooks and writes. This is what makes the structural gates unreachable from inside the
@@ -557,6 +627,30 @@ Where that cannot hold — migrations against real data, external side effects �
 **Shared expensive setup is built once and cloned.** Whatever the check environment is, build a
 template at run start and clone per attempt. Without this, parallel workers serialise on
 environment construction and the parallelism claim does not survive contact.
+
+**Names derive from the card, never from card output.** *(ADR-0007.)* The key is the card id with `.`
+and `-` mapped to `_`. The worktree is `<workspace_root>/<key>`; the container and database are
+`card_<key>_attempt<n>`. Ids are a hex hash plus dotted segments, so the mapping cannot collide. A
+name over 63 bytes fails provisioning, because Postgres truncates longer identifiers without an error.
+Because names are derivable, the reaper can kill a container whose worker died before recording
+anything.
+
+**Teardown checks its target first.** Before `reset --hard`, `clean -fdx` or `DROP DATABASE`: the
+resolved worktree path must be strictly inside `workspace_root`, and the database name must match
+`card_*`, which excludes the template. A failed check refuses the step and counts as a blocking
+failure below.
+
+**Every stage has a time limit and a stated failure:**
+
+| Stage | Runs | On failure or timeout |
+|---|---|---|
+| Provision: worktree, container, clone | after claim, each attempt | Attempt ends as `provision_failed`, consumes an attempt, retries with backoff. Infrastructure, not `harness_bug`. |
+| Kill the container | before any requeue | **Blocks requeue.** The row stays put; the next reaper pass retries. |
+| Drop the attempt's database and filestore | before any requeue | Logged. Requeue proceeds: a retry never reuses the name, and §10 detects the orphan. |
+| Reset the worktree | before any requeue | **Blocks requeue.** A retry would inherit the files. |
+
+A blocked teardown is the inert failure §5.4 relies on: the card stalls visibly rather than running
+next to a live writer or on a dirty worktree.
 
 ---
 
@@ -823,7 +917,12 @@ Only those the substrate itself must handle. Policy-level modes live in `harness
 | Worker dies mid-card | lease expiry | reaper: kill, drop, reset, requeue |
 | **Zombie writer** | stale worker resumes after reclaim | fencing rejects the commit; the container kill prevents the writes |
 | Crash-looping card | `attempts` climbs with no explicit failure | `attempts` counts deliveries, so `max_attempts` bounds it |
-| Infrastructure failure consuming an attempt | `failure_class` names it | narrow allow-list resumes without consuming an attempt |
+| Infrastructure failure consuming an attempt | `failure_class` names it | narrow allow-list raises `max_attempts` by one; `attempts` is the fence and never falls. Backoff still applies, and only `deadline_at` bounds the total |
+| Silent loop | `last_progress_at + stall_after < now()` | reaper: as worker death, recorded `stalled` |
+| Stall clause killing live work | `stalled` attempts that succeed on retry with no config change | raise `stall_after`; ADR-0007 sets the threshold for deleting the clause |
+| Blocked teardown | leased past expiry, or `failed`, and not clearing; kill or reset errors in the reaper log | none automatic: a person looks. The next pass retries |
+| Provisioning outage | `provision_failed` climbing across unrelated cards | backoff; quarantines at `max_attempts` with the class named |
+| Run over budget | pending cards, none claimed, spend at or above `runs.max_cost_usd` | a person raises the limit or abandons the run |
 | Runaway runtime | `deadline_at` | quarantine; never extended by heartbeats |
 | Deploy-induced churn | reap count spikes on release | graceful drain |
 | Orphaned workspace | clone or container count exceeds live leases | reaper collects as part of kill-first |
@@ -848,6 +947,11 @@ good**. This section is only the first.
 - **Contention tests** — N workers, one board, assert every card is claimed exactly once.
 - **Kill tests** — `SIGKILL` a worker mid-card; `docker kill` a container mid-write. Assert clean
   requeue, worktree reset, workspace collection, and that the stale process's writes are absent.
+  Assert one closed `task_attempts` row per delivery, and `not_before` set on the requeued card.
+- **Stall tests** — hang the card loop while the heartbeat keeps running; assert it is reaped as
+  `stalled`. Run a tool for longer than the base TTL within its timeout; assert it is not.
+- **Teardown tests** — make the kill fail, then the reset, then the drop. Assert the first two block
+  requeue and the third does not. Point teardown outside `workspace_root`; assert it refuses.
 - **Replay tests** — same run twice from cache; assert identical terminal graph.
 
 ### 11.1 Gate A
@@ -864,9 +968,10 @@ This is harder to test than a poll-loop crash, and it is the right place to spen
 ## 12. Build order for the substrate
 
 1. Schema, including `runs`, `project` and `summary_schema_version`. **These three cannot be
-   retrofitted.** Half a day beyond the rest.
+   retrofitted.** Half a day beyond the rest. `task_attempts` goes in here too: rows a run never wrote
+   cannot be recovered.
 2. Ledger access layer: claim, heartbeat, commit, release — all fenced.
-3. Reaper, in kill-first order.
+3. Reaper, in kill-first order, with the stall clause and backoff.
 4. Worker loop and graceful drain.
 5. Content store with the two-method interface, Postgres backend, write-side truncation.
 6. Workspace provisioning: worktree, container, environment clone.
