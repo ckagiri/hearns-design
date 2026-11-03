@@ -190,6 +190,7 @@ ladder:
   - rung: 0
     name: static
     where: host                      # the card cannot see it, edit it, or run it
+    visible: false                   # never rendered into layer 8 (rule 137)
     timeout: 30s
     steps:
       - ruff check . && ruff format --check .
@@ -202,12 +203,14 @@ ladder:
   - rung: 1
     name: unit
     where: workspace
+    visible: true
     timeout: 120s
     steps: ["pytest tests/unit -q"]
 
   - rung: 2
     name: integration
     where: workspace
+    visible: true
     timeout: 300s
     steps: ["pytest tests/integration -q"]
 ```

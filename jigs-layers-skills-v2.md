@@ -15,6 +15,8 @@ Sections 2 and 3 depend on §5.1's cache-scope table being correct, which is unv
 - §3.7 added — two hazards on import: `agents/` and `SKILL.md`'s workflow.
 - Open questions 2 and 4 merged; they are one experiment.
 - Naming pass, 2026-11-03: each layer gets one fixed name (§0), and open questions 5 and 6 added.
+- ADR-0008, 2026-11-03: behavioural is not a kind or a jig (§1.3), and open question 5 closed.
+- ADR-0010, 2026-11-03: §3.2 separates a chooser from a table of declared card fields.
 
 ---
 
@@ -78,7 +80,7 @@ mechanical — you can apply it without judgement, and judgement is what inflate
 **Two jigs, correctly:**
 
 ```
-execute_behavioural                    verify_behavioural
+execute                                verify
   status: <enum>                         gaps: [...]
   decided: [...]                         unverifiable: [...]
   open_questions: [...]                  constraints_walk: [...]
@@ -90,7 +92,7 @@ execute_behavioural                    verify_behavioural
 **One jig, though it looks like two:**
 
 ```
-execute_behavioural                    execute_structural
+execute, behavioural card              execute, structural card
   status: <enum>                         status: <enum>
   decided: [...]                         decided: [...]
   open_questions: [...]                  open_questions: [...]
@@ -105,7 +107,9 @@ execute_behavioural                    execute_structural
   None of those are the jig.
 ```
 
-The `verify_behavioural` jig already demonstrates the collapsed form: `verify_input` is a
+Behavioural and structural describe the card, not a kind or a jig (ADR-0008, rule 138).
+
+The `verify` jig already demonstrates the collapsed form: `verify_input` is a
 Jinja slot with four config values, not four jigs. E2's arms are configs. Same principle,
 applied to a different axis.
 
@@ -301,8 +305,10 @@ computes it.
 ```
 
 A broad execute skill set is a one-time write. Narrowing it **per card** would cost more
-*and* require a chooser — a model call or a heuristic that drifts from card content. That
-is core §3.4's deleted router returning.
+*and* require a chooser — a model call or a heuristic over card content, which can drift
+from it. That is core §3.4's deleted router returning. Knowledge narrower than a kind goes
+to layer 6 instead, from a table triggered by declared card fields, which is neither
+(ADR-0010).
 
 **Confirmation that the temptation is real:** `odoo-development-skill` ships that chooser.
 `agents/odoo-skill-finder.md` is an agent whose stated job is locating relevant patterns
@@ -491,7 +497,7 @@ question, and relocating it to the splitter is the correct answer rather than a 
 | # | Rule |
 |---|---|
 | P1 | A new jig is justified when the output schema differs, not when the content differs. |
-| P2 | Domain knowledge never lives in a jig. If a jig needs a domain name in its filename, the content is misplaced. Check-ladder rungs are the exception: domain-specific but layer 8, kind-scoped, and not prose. |
+| P2 | Domain knowledge never lives in a jig. If a jig needs a domain name in its filename, the content is misplaced. Check-ladder rungs hold domain commands, but they live in `checks.yaml`, not the jig (rule 137). |
 | P3 | Rationalization table rows live in layer 2 with their skill, except rows that survive a domain change. |
 | P4 | Skill sets are selected per kind, by hand, at config-pin time. Nothing computes them. |
 | P5 | Every skill file ships paired with the RED case that motivated it. |
@@ -522,8 +528,8 @@ question, and relocating it to the splitter is the correct answer rather than a 
    `18-19` delta in `execute[]` and count version-inappropriate constructs. If the delta
    changes nothing, §3.6's exception closes and nothing is imported at all.
 
-5. **[new] What is the cache scope of layers 0 and 3?** Policy §5.1 says per role; §2.1 here says
-   per kind. Recommendation: per kind, because one role can serve two kinds. Not settled here.
+5. **[closed, ADR-0008] What is the cache scope of layers 0 and 3?** Per kind: both come from the
+   jig, and each kind has one jig. Policy §5.1 now agrees with §2.1 here.
 
 6. **[new] Where does layer 8 belong?** `jig-sketch.py` sends it before layer 4, so it sits in the
    cached prefix; the docs list it last. Checks read last may get more attention, which is

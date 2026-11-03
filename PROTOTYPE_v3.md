@@ -485,8 +485,8 @@ silently, and the drift appears as `invalid_args` denials that look like model m
 check 1 — same argument as `normalize` being non-optional at the type level.
 
 **No templating engine.** Jinja2's version would affect rendered bytes and therefore enter
-`config_hash`. Layers 0–3 are files read verbatim; layers 4–7 are five f-strings. That is the whole
-requirement.
+`config_hash`. Layers 0–3 are files read verbatim, except that a role's slot values are substituted
+with `str.replace`; layers 4–7 are five f-strings. That is the whole requirement.
 
 ### Measurement: you already have a better eval harness
 

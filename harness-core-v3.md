@@ -83,7 +83,7 @@ is an instance, not the definition.
 | `Verifier` | Compares subtree outputs against the root intent. |
 | `Integrator` | Merges repo changes from sibling tasks. |
 | `Ledger` | The Postgres access layer: claim, commit, query. |
-| `Jig` | Prompt template + output schema + checks, bound per kind. |
+| `Jig` | Prompt template + tools + output schema + allowed outcomes, bound per kind. Names no check command (ADR-0008). |
 | `Policy` | Failure class → outcome table. Config, not a process. |
 | `Budget` | A claim-time query over spend (§5.3). May only say *no*. A function, not a process. |
 | `Worker` | An OS process running the claim loop. **Synonymous with process.** |
@@ -92,8 +92,9 @@ is an instance, not the definition.
 adopted); `Relay` goes with notification, which is absent.
 
 **Worker, role, process.** A *process* is an OS process. A *worker* is a process running the claim
-loop — the same thing. A *role* is a config entry: which kinds and tiers to claim, which model,
-which jig, which hooks. A worker runs one role for its lifetime.
+loop — the same thing. A *role* is a config entry: which kinds and tiers to claim, which model and
+effort, which jig, which hooks. A worker runs one role for its lifetime. Each kind has one jig, and
+each kind and tier is claimed by one role (rule 136).
 
 ### 3.2 Whiteboard vocabulary — conversation only
 
@@ -121,7 +122,7 @@ spectrum. What is needed is the enforced version. Layers, not a role.
 
 **Compactor.** Context is managed by splitting, not compressing.
 
-**Critic (as a role).** Available as a check type inside a jig where no objective oracle exists. It
+**Critic (as a role).** Available as a check type in `checks.yaml` where no objective oracle exists. It
 never displaces a test where a test is possible.
 
 **Formatter.** See principle 3.
@@ -723,24 +724,26 @@ because the wrong one makes the cross-run queries useless.
 **Not one hash.** A digest over the whole config directory is too coarse: change the `digest` jig's
 wording and every `execute` card in the project becomes incomparable to every earlier one, though
 nothing an executor saw changed. Since the hash answers *did this card see the same system as that
-one*, it is **per-kind**, computed as a tree:
+one*, it is **per kind and tier**, because `execute` alone runs on three models (ADR-0008). It is
+computed as a tree:
 
 ```
 runtime_hash = H( image_digest, source_commit, sorted(addon_commits),
                   template_db_hash, dependency_lock )
 
-kind_hash(k)  = H( runtime_hash,
+kind_hash(k, t) = H( runtime_hash,
                    house_preamble,          # layer 1, shared
-                   jig_template(k),         # RENDERED, not the file
+                   jig_template(k, t),      # RENDERED, not the file; a role may fill a slot
                    output_schema(k),
-                   check_ladder(k),         # layer 8
+                   check_ladder(k),         # layer 8, plus the rungs hidden from the card
                    tool_schemas(k),         # layer 3
                    skills_rendered(k),      # layer 2
-                   model(k), effort(k), temperature(k) )
+                   model(k, t), effort(k, t), temperature(k, t) )
 ```
 
-`tasks.config_hash` is `kind_hash` for that card's kind. `runs.config_pin` remains the **full**
-snapshot. Two artifacts, two jobs: the pin answers *what was the system*, the hash answers *was this
+`tasks.config_hash` is `kind_hash` for that card's kind and tier, so a retry that raises the tier moves
+it. `effort(k, t)` is the base effort: the raised effort on attempt 2 (policy §2.2) reaches the cache
+key, not this hash. `runs.config_pin` remains the **full** snapshot. Two artifacts, two jobs: the pin answers *what was the system*, the hash answers *was this
 card's slice of it the same*. That split is what makes the payoff query work:
 
 ```sql
@@ -752,7 +755,8 @@ from tasks where kind = 'execute' and config_hash = :h;
 do not depend on card content, so they render at pin time against a null card. Hash that output.
 This makes the hash track **what the model saw** rather than what is on disk: reformatting YAML,
 reordering keys or editing a comment that never renders leaves comparability intact, while a comment
-that *does* render is part of the prompt and belongs in the hash.
+that *does* render is part of the prompt and belongs in the hash. Hidden rungs are the one exception:
+no prompt shows them, but they decide outcomes, so their definitions are hashed anyway.
 
 Canonicalisation, all boring and all necessary:
 
@@ -764,7 +768,7 @@ Canonicalisation, all boring and all necessary:
 
 **It is not the cache key.** They look alike and fail differently. The cache key is the rendered
 prompt plus model, effort, params, tool-schema hash and note ids — per-call and exact; too coarse
-and you serve wrong answers. `config_hash` is per-kind and coarser by design; too coarse and you get
+and you serve wrong answers. `config_hash` is per kind and tier and coarser by design; too coarse and you get
 misleading comparisons, which is a silent quality problem rather than a correctness one. They
 overlap heavily, neither derives from the other, and unifying them would drag per-card content into
 the comparability hash.

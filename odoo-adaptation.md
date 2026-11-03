@@ -277,7 +277,8 @@ rung's price.
 
 **Rules that follow:**
 
-- **Rung 0 always runs, on the host, and the card cannot see or edit it.** It is the hidden oracle.
+- **Rung 0 always runs, on the host, and the card cannot see or edit it.** It is the hidden oracle,
+  so layer 8 does not render it (rule 137).
 - **A card that fails rung 0 never gets a database.** Most bad cards die here, and this is what keeps
   R28 survivable.
 - **`check_spec` declares which rungs apply**, and the splitter must justify omitting rung 2 —
@@ -630,7 +631,7 @@ by the splitter.
 | Standard views (list/form/search) for a specified model | complete — derivable from the field list | cheap | 0,1 |
 | ACL matrix rows from the spec's `access:` block | complete | cheap | 0,1,3 |
 | Menus, actions, sequences, demo data | complete | cheap | 0,1 |
-| Record rule with a stated `semantic:` and a pre-written test | prose — the domain must be derived | **strong** | 0,1,2,3 |
+| Record rule with a stated `semantic:` and a pre-written test | constraint — the domain must be derived | **strong** | 0,1,2,3 |
 | Compute / constrains / onchange | prose | middle–strong | 0,1,2 |
 | State machine transitions and their guards | constraint, not instruction | strong | 0,1,2 |
 | Report layout (QWeb) | prose | middle | 0,1 |
@@ -662,11 +663,12 @@ Write this into the root intent's SHAPE heading (§19), because it is a prior wo
 > hard.
 >
 > **Behavioural work** — computes, constraints, record-rule domains, state transitions, dispensing
-> and expiry logic — is specified by prose plus a test, checked by rung 2, tiered middle or strong,
-> and gets a test card before an implementation card.
+> and expiry logic — is specified by prose plus a test, checked by rung 2, tiered by its contract
+> shape, usually middle or strong, and gets a test card before an implementation card.
 
-The two halves have different cost models, different tiers, different check ladders and different
-drift exposure. Treating them as one kind is what makes the cost model wrong.
+The two halves have different cost models, different contract shapes, different rungs and different
+drift exposure. Treating them as one tier is what makes the cost model wrong. They remain one kind,
+`execute`: contract shape sets the tier and `check_spec` sets the rungs (ADR-0008).
 
 **Amendment, per §5.7.** The structural half may not be cards at all. If a generator can emit it
 from the schema deterministically, it is a hook, and the partition below shrinks to the behavioural
@@ -691,7 +693,7 @@ t-ph                                    split
 ├─ t-ph.9   state transitions + guards               execute  strong  deps: .8
 ├─ t-ph.10  TEST: expiry/batch selection             execute  strong  deps: .1
 ├─ t-ph.11  expiry/batch dispensing logic            execute  strong  deps: .10
-├─ t-ph.P   preflight (findings-2 §4.1)              gate            children dep on it
+├─ t-ph.P   preflight (findings-2 §4.1)              gate            children dep on it; only if E1 justifies it
 ├─ t-ph.V   verify (rung 3 + summaries)              gate            deps: all
 └─ t-ph.D   digest                                    gate            deps: all
 ```
@@ -758,15 +760,15 @@ interfaces.consumes.
 
 | Layer | Odoo content | Cache scope |
 |---|---|---|
-| 0 SYSTEM | role, output contract, refusal rules, the four-status outcome (findings-2 §2.1) | role |
+| 0 SYSTEM | role, output contract, refusal rules, the four-status outcome (findings-2 §2.1) | kind |
 | 1 PREAMBLE | §2's conventions; ORM house rules; the banned list below | house |
 | 2 SKILLS | the Odoo skill (§9.2 below), TDD skill, the relevant rationalization tables | kind |
-| 3 TOOLS | file edit, `odoo-bin` in-container, psql read-only on the clone; **no network** | role |
+| 3 TOOLS | file edit, `odoo-bin` in-container, psql read-only on the clone; **no network** | kind |
 | 4 ORIENTATION | **generated** (§9.1) + the root intent's CONSTRAINTS verbatim | run |
 | 5 | the card's contract, its `owns` block, its `interfaces` | card |
 | 6 | dependency summaries + retrieved artifacts (named-risk only, findings-2 §5) | card |
 | 7 | previous attempt's check output, on retry | attempt |
-| 8 | the check ladder's rung definitions | kind |
+| 8 | the definitions of the rungs the card may see | kind |
 
 ### 9.1 Layer 4 is a query, not prose
 
@@ -817,7 +819,9 @@ Seed entries the table will almost certainly need:
 
 **Structural verify** takes rung 3's introspection diff plus the root schema. It is nearly
 deterministic — the model's job is triage and explanation, not detection, because the missing/extra/
-divergent lists are computed. This is the cheapest possible gate and it should be tiered accordingly.
+divergent lists are computed. This is the cheapest possible gate and it should be tiered accordingly,
+though no role claims it yet (policy §1.3); it gets `verify_cheap` once open question 2 confirms cheap
+is enough.
 
 **Behavioural verify** takes the card's `touch_set` diff (findings-2 §1.4) plus the root intent's
 CONSTRAINTS block plus the `semantic:` lines for anything it touched. This is where the diff-reading

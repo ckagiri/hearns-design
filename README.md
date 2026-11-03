@@ -55,6 +55,9 @@ expected to be short.
 | `adr/0002-judge-not-adopted.md` | `judge` is deleted, not deferred. Ties are recorded human rulings. |
 | `adr/0003-enforcement-collapsed-notification-absent.md` | Enforcement is isolation plus host-side hooks. Notification is absent. Both with named reopening triggers. |
 | `adr/0004-card-runtime-below-the-boundary.md` | A library runs the card's tool loop, below the card boundary and nothing above it. The cache is its model interface. Scoped by what it excludes. |
+| `adr/0008-kind-role-and-jig-have-one-job-each.md` | Each kind has one jig, each kind and tier one role. Tools on the jig, checks in `checks.yaml`, hash per kind and tier. Behavioural is not a kind. |
+| `adr/0009-split-schema-has-a-domain-slot-for-owns.md` | **Proposed, held** until `generate.py` is measured. Odoo's `owns` keys move out of the split jig into a domain slot. |
+| `adr/0010-retrieval-triggers-are-card-properties.md` | Knowledge narrower than a kind reaches layer 6 from a hashed table, triggered by declared card fields. Built when a RED case asks for it. |
 
 An ADR exists so a deletion keeps its argument. Without one, a removed section is just a gap that
 grows back.
@@ -110,7 +113,7 @@ policy §7 and register §7:
 - Layer 2 sizing: whether a pinned skill set narrows attention (R50).
 - Effort: whether reasoning suppresses refusal (R47, E2 arm C′).
 - Whether the structural half needs a model at all, or a generator absorbs it (R45).
-- Tool-set width: whether a narrow per-role set changes behaviour or only price (policy §1.6).
+- Tool-set width: whether a narrow per-kind set changes behaviour or only price (policy §1.6).
 
 **Added 18 August:** policy §1.6 — the card runtime. §1.5 acknowledged the tool loop; nothing
 specified it. Now owned, with the adoption in ADR-0004 and two residuals recorded (R60, R61).

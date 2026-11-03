@@ -186,7 +186,7 @@ real Postgres. Budget the same as v1 and treat any saving as luck.
 | P2-10 | `integrate` — rung 1 on the merged tree | 1 d | 0.5 d | DELEGATE |
 | P2-11 | `re_verify` + round counter and breaker | 1 d | 0.5 d | DELEGATE |
 | P2-12 | `digest` — the three queries | 1 d | 0.4 d | DELEGATE |
-| **P2-13** | **Executor runtime: tool loop, per-role tool sets, schema validation** | — | **1–1.5 d** | DELEGATE |
+| **P2-13** | **Executor runtime: tool loop, per-kind tool sets, schema validation** | — | **1–1.5 d** | DELEGATE |
 | P2-14 | `skills.yaml` — hand-chosen, RED-paired | 0.5 d | 0.5 d | HUMAN |
 | P2-15 | Flatten version-delta files, strip `agents/` | 0.5 d | 0.2 d | DELEGATE |
 
@@ -194,7 +194,7 @@ real Postgres. Budget the same as v1 and treat any saving as luck.
 
 **P2-13 was missing from v1 and from this plan's first draft.** Phase 1 builds the substrate and
 Phase 2 builds jigs — which are prompt templates — but something has to *execute* a jig inside the
-container. ADR-0004 decides what: a library below the card boundary, with per-role tool sets
+container. ADR-0004 decides what: a library below the card boundary, with per-kind tool sets
 (rule 135) so a `verify` card constructed without a write tool cannot edit what it reviews. Sized
 at 1–1.5 d on the assumption P1-24 passed; 3–4 d if it did not and the loop is hand-written.
 
@@ -207,7 +207,7 @@ gate on Phase 2's real duration**, and it accumulates in calendar time whatever 
 something fluent that covers the failures it can imagine. That is the inherited-elaboration risk
 (R51) arriving through a new door. Every rule in a jig traces to a RED case or it comes out.
 
-**Layer 3 is now settled structurally and contested behaviourally.** Rule 135 makes per-role tool
+**Layer 3 is now settled structurally and contested behaviourally.** Rule 135 makes per-kind tool
 sets a gate, which needs no experiment — a card without a write tool cannot write. Whether a
 *narrower* set also improves attention is R50's argument moved to tools, and it is unmeasured;
 policy §1.6 scopes the ablation and P3-5 runs it.

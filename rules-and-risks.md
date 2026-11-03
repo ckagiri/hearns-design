@@ -173,7 +173,7 @@ deleted one.
 | 65 | A card never emits its own reviewer. Gates are pinned by the splitter. |
 | 66 | Patterned work — the same small edit across many sites — is one child enumerating every site. |
 | 67 | `decided` entries carry what, why, and what it costs if wrong. An entry with no `cost_if_wrong` is not a decision, it is a description. |
-| 68 | The final attempt escalates one tier. At the tier ceiling, escalation becomes a fresh-eyes framing in layer 7. |
+| 68 | The final attempt escalates one tier. At the tier ceiling, which is the highest tier a role claims for that kind (ADR-0008), escalation becomes a fresh-eyes framing in layer 7. |
 | 69 | A verifier never widens its own scope. What it cannot verify it reports as `unverifiable`. |
 | 70 | Retrieval cites the risk that justified it, and the citation lands in the summary. |
 | 71 | A card's kind ratchets toward `split` and never away. A single-`execute`-child split is rejected. |
@@ -247,7 +247,7 @@ deleted one.
 | # | Rule |
 |---|---|
 | 116 | A new jig is justified when the output schema differs, not when the content differs. |
-| 117 | Domain knowledge never lives in a jig. Check-ladder rungs are the exception — layer 8, not prose. |
+| 117 | Domain knowledge never lives in a jig. Check-ladder rungs hold domain commands, but they live in `checks.yaml`, not the jig (rule 137). |
 | 118 | Rationalization rows live in layer 2 with their skill, except rows that survive a domain change. |
 | 119 | Skill sets are selected per kind, by hand, at config-pin time. Nothing computes them. |
 | 120 | Every skill file ships paired with the RED case that motivated it. |
@@ -261,7 +261,7 @@ deleted one.
 
 | # | Rule |
 |---|---|
-| 126 | `config_hash` is per-kind. `runs.config_pin` holds the full snapshot; the hash holds this card's slice. |
+| 126 | *(`config_hash` is per-kind)* → **amended**, ADR-0008: `config_hash` is per kind and tier. `runs.config_pin` holds the full snapshot; the hash holds this card's slice. |
 | 127 | The hash covers the **rendered** layers, not the files. |
 | 128 | A version bump with an identical hash is fine. A hash change with no version bump fails the build. |
 | 129 | A worker recomputes its `kind_hash` at claim time and refuses the card on mismatch. |
@@ -275,7 +275,11 @@ deleted one.
 | 132 | *(ex-v2 67, the diagnostic)* **Remove any worker type: the system must degrade, never hang.** |
 | 133 | Changes land in an existing document, an ADR, or this file. A document created to hold pending changes is the failure this file exists to prevent. |
 | 134 | Where an external tool selects a model or effort on this project's behalf, the **resolved** flags are what enters the record — never the abstract label. A label whose meaning varies by vendor cannot support a comparability claim. |
-| 135 | A role's tool set is enumerated explicitly and is the narrowest that lets the role produce its contract. **Absence of a tool is a gate**, not an omission — a card without a write tool cannot write. |
+| 135 | *(a role's tool set)* → **amended**, ADR-0008: a kind's tool set is enumerated in its jig and is the narrowest that lets the kind produce its contract. **Absence of a tool is a gate**, not an omission — a card without a write tool cannot write. |
+| 136 | Each kind has exactly one jig. Each kind and tier is claimed by exactly one role, and every kind in a role shares that role's jig. Startup validation enforces this; a card whose kind and tier no role claims is rejected at emit time. |
+| 137 | Check definitions live only in `checks.yaml`. A jig names no command, a card's `check_spec` picks the rungs, and layer 8 renders only rungs marked visible. |
+| 138 | For `execute`, tier and effort follow contract shape alone. Whether a card needs a test is a separate question, answered by `check_spec`. Behavioural is not a kind, a jig or a contract shape. |
+| 139 | The harness adds a file to layer 6 only from a hand-written table keyed by kind, on a trigger that is a declared field of the card: never the intent text, the contract's wording or a model call. The table and files enter `config_hash`, each row names a risk, and each file obeys P5 and P6. Built when a RED case asks for it. |
 
 ---
 
@@ -342,7 +346,7 @@ deleted one.
 | R50 | **A pinned skill set narrows attention.** Cache amortises price, not presence. | Per-set ablation against cards the set was not written for |
 | R51 | Inherited elaboration — a large, well-made, non-RED-derived corpus is available to paste | Rules 120–121, 125. Import version deltas; derive the rest. |
 | R52 | **Silent config drift mid-run** — the run quietly stops being one experiment | Claim-time `kind_hash` recomputation (rule 129); hash-stability tests |
-| R53 | Comparability hash too coarse | Per-kind `kind_hash` over rendered layers |
+| R53 | Comparability hash too coarse | Per-kind-and-tier `kind_hash` over rendered layers |
 
 ### Relocated from v2's register
 
@@ -468,6 +472,8 @@ have never been observed** — and rules 121 and 132 are the model for what to d
 Append-only. One line per change. Date, ADR where one exists, what moved.
 
 ```
+2026-11-03  ADR-0010  retrieval triggers are declared card fields, from a hashed table; rule 139; built when a RED case asks
+2026-11-03  ADR-0008  kind, role and jig have one job each; tools on the jig; hash per kind and tier; checks in checks.yaml; rules 68, 117, 126, 135 amended; rules 136–138
 2026-11-03  ADR-0007  task_attempts; reaper stall clause, backoff, collects failed; workspace failure table; Budget as a claim query; rule 94; R57 now partial
 2026-08-18  ADR-0004  card runtime adopted below the card boundary; core §8 cache is its model interface
 2026-08-18  —         policy §1.6 added — the loop §1.5 acknowledged but nobody specified

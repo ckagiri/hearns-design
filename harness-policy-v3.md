@@ -23,7 +23,7 @@ marked ✓ are settled by evidence. Everything else is a working assumption.
 
 | Kind | Does | Emits |
 |---|---|---|
-| `split` | decomposes an intent | children + gates + preflight, one transaction |
+| `split` | decomposes an intent | children + gates, one transaction; + preflight if E1 justifies it |
 | `execute` | does leaf work | a diff, a summary |
 | `verify` | compares against the root intent | gaps, unverifiable, minors |
 | `re_verify` | verdicts prior findings | ADDRESSED / NOT ADDRESSED per finding |
@@ -43,14 +43,42 @@ at split time.
 
 ### 1.3 The worker loop and roles
 
-A role is config: kinds, tiers, model, jig, hooks, lease TTL. A worker runs one role for its
-lifetime. Ten workers on the executor role are ten processes with the same config.
+A role is config: kinds, tiers, model, effort, jig, hooks, lease TTL. A worker runs one role for its
+lifetime. Ten workers on `execute_cheap` are ten processes with the same config.
 
 **No default tier anywhere.** Absence is a config validation error, not a fallback.
 
+**One job each** (ADR-0008, rule 136). A kind says what type of work a card is. A role says who claims
+it and how hard they try. A jig says how the work is done. Each kind has exactly one jig, each kind and
+tier is claimed by exactly one role, and every kind in a role shares that role's jig. Startup
+validation enforces this, and a card whose kind and tier no role claims is rejected at emit time.
+
+| Role | Kinds | Tiers | Jig |
+|---|---|---|---|
+| `split` | `split` | strong | `split` |
+| `execute_cheap` | `execute` | cheap | `execute` |
+| `execute_middle` | `execute` | middle | `execute` |
+| `execute_strong` | `execute` | strong | `execute` |
+| `verify_middle` | `verify` | middle | `verify` |
+| `verify_strong` | `verify` | strong | `verify` |
+| `re_verify` | `re_verify` | middle | `re_verify` |
+| `integrate` | `integrate` | middle | `integrate` |
+| `digest` | `digest` | middle | `digest` |
+
+Models and effort are in §2.0. `verify_middle` reads summaries and `verify_strong` reads diffs, set
+through the jig's `verify_input` slot; E2 arm D decides whether both survive ⚖. `preflight` has no role
+until E1 justifies it (§11), and `spec_revision` has none while a human writes it.
+
+**Open ⚖:** Odoo's structural verify (`odoo-adaptation` §10.1) reads a third input, rung 3's diff, and
+has no role yet. It gets `verify_cheap` once that document's open question 2 confirms cheap is enough.
+
 ### 1.4 Jigs
 
-Prompt template + output schema + checks, bound per kind, versioned with the config pin.
+Prompt template + tools + output schema + allowed outcomes, bound per kind, versioned with the config
+pin.
+
+**A jig names no check command** (rule 137). Check definitions live only in `checks.yaml`, a card's
+`check_spec` picks the rungs, and layer 8 renders only rungs marked visible.
 
 **A jig is written against observed failures, captured before the jig existed.** The method:
 
@@ -176,7 +204,7 @@ across attempts, does not persist between cards, and does not know that other ca
 it offers above that line — durable workflows, session resumption, orchestration — is a controller
 under a different name, and core §3.4 deletes those by name rather than by category.
 
-**The tool set is enumerated per role, and absence is a gate** (rule 135). A `verify` card
+**The tool set is enumerated per kind, in the jig, and absence is a gate** (rule 135). A `verify` card
 constructed without a write tool cannot edit what it is reviewing. A `digest` card without a shell
 cannot run anything. This is rule 25 available at the cheapest possible price: not an instruction
 the card is asked to honour, but a capability it was never given. It also puts layer 3 on the same
@@ -192,7 +220,7 @@ boundary (R60).
 schema costs window and adds a wrong choice to pick from. That is R50's argument moved from skills
 to tools, and R50 is exactly the risk where every visible metric can improve while the thing being
 measured degrades. **Deciding experiment:** the per-set ablation already scoped for layer 2, run a
-second time over tool sets — give a role the full set and the narrow set on cards written for
+second time over tool sets — give a kind the full set and the narrow set on cards written for
 neither, and compare. Until then the narrow set is justified *structurally*, as a gate, and the
 attention claim is unmeasured.
 
@@ -225,7 +253,8 @@ execute_cheap:   {model: haiku,  effort: minimal, temperature: 0}
 execute_middle:  {model: sonnet, effort: medium}
 execute_strong:  {model: opus,   effort: high}
 split:           {model: opus,   effort: high}
-verify_diff:     {model: opus,   effort: high}
+verify_middle:   {model: sonnet, effort: medium}
+verify_strong:   {model: opus,   effort: high}
 re_verify:       {model: sonnet, effort: low}
 integrate:       {model: sonnet, effort: minimal, temperature: 0}
 digest:          {model: sonnet, effort: minimal, temperature: 0}
@@ -243,7 +272,7 @@ The splitter's declared completeness sets both.
 | `split`, `preflight` | high | Search over partitions satisfying four tests at once. One call per subtree — the cheapest place in the system to think hard. |
 | `execute`, complete contract | minimal | The edit is enumerated. Thinking is pure cost. |
 | `execute`, prose contract | medium | The edit is derived from intent. |
-| `execute`, behavioural | high | Deriving a rule domain from a stated semantic **is** the reasoning task. |
+| `execute`, constraint contract | high | Deriving a rule domain from a stated semantic **is** the reasoning task. |
 | `verify` on summaries | medium | Comparison. |
 | `verify` on diffs | high | Holds intent against code. |
 | `re_verify` | low | Verdicting specific claims against specific evidence. |
@@ -298,6 +327,12 @@ model on a prose contract takes two to three times the turns — costing more ov
 **Second-order benefit:** the splitter has an incentive to write complete contracts, because a
 complete contract is a cheaper child.
 
+**Behavioural is not a contract shape** (ADR-0008, rule 138). Shape asks how much of the edit the
+executor must derive, and sets tier and effort. Behavioural asks whether correctness needs a test, and
+is answered by `check_spec`. The two often coincide, but neither decides the other: a QWeb layout is
+prose with no test, and a behavioural implementation behind a pre-written test can be cheap. A test
+card is `execute` with `expect: FAIL`; its implementation card is `execute` with `expect: PASS`.
+
 **The declaration is checkable.** A child declared complete whose contract contains a placeholder
 fails a mechanical scan. A child declared complete that then takes eleven turns is a metric row.
 
@@ -320,7 +355,9 @@ buying a bigger model.
 
 **At the tier ceiling, escalation becomes a fresh-eyes framing in the retry context** — prior
 attempts' check output plus *two prior attempts; read their failures; you own this now*. Without
-that, rule 68 is a no-op for exactly the cards that needed it most.
+that, rule 68 is a no-op for exactly the cards that needed it most. A kind's ceiling is the highest
+tier a role claims for it (§1.3), so `re_verify`, `integrate` and `digest` start at theirs, and a
+raised card never lands on a tier nothing claims.
 
 **What would change this:** reasoning tokens against attempts saved (core §9.2). If raised effort
 does not reduce attempts, rung 2 is pure cost and the ladder returns to two rungs.
@@ -411,7 +448,8 @@ one has to earn its place at emit time or not at all.
 
 ### 3.7 `preflight` ⚖
 
-A card emitted with the children, which the children depend on. Its output is a **table, not a
+Built only if E1 shows conflicts the mechanical checks miss (§11). A card emitted with the children,
+which the children depend on. Its output is a **table, not a
 verdict**: one row per sibling pair sharing a path or a symbol, naming what one produces against
 what the other consumes and what was found. A clean verdict without rows is not a scan that ran.
 
@@ -560,15 +598,15 @@ itself mandated is still a defect; the plan does not grade its own work.
 
 | Layer | Content | Cache scope |
 |---|---|---|
-| 0 | role, output contract, refusal rules, the outcome enum | role |
+| 0 | role, output contract, refusal rules, the outcome enum | kind |
 | 1 | house preamble — conventions, banned patterns | house |
 | 2 | skills for this kind, with their rationalization tables | kind |
-| 3 | tools | role |
+| 3 | tools | kind |
 | 4 | **generated** orientation + the root intent's CONSTRAINTS **verbatim** | run |
 | 5 | the card's contract, ownership and interfaces | card |
 | 6 | dependency summaries + retrieved artifacts | card |
 | 7 | previous attempt's check output, on retry | attempt |
-| 8 | check definitions | kind |
+| 8 | definitions of the rungs the card may see | kind |
 
 **Layer 4 is a query, not prose**, wherever the domain permits it — generated from the environment
 rather than summarised. More accurate than any prose summary, cacheable per run, costs a script.
@@ -594,6 +632,10 @@ what any file was for.
 Retrieval must **cite the risk that justified it**, one focused check per named risk, and the
 citation lands in the summary. This makes just-in-time retrieval auditable — you can query which
 cards retrieved what and why — and it supplies a structural detector: retrieval with no named risk.
+
+**The harness may also add a file to layer 6**, but only from a hand-written table keyed by kind, on a
+trigger that is a declared field of the card, with the table and files in `config_hash` and each firing
+recorded with its risk (ADR-0010, rule 139). It is built when a RED case asks for it.
 
 ### 5.3 Two-tier reporting
 
@@ -850,6 +892,7 @@ Section by section, since that is the point of it being separate.
 
 | § | Changes if |
 |---|---|
+| 1.3 Roles | E2 arm D settles verify's input — one `verify` role goes; a kind needs different tools by tier — tools return to the role (ADR-0008) |
 | 1.4 Jig count | jigs start needing domain names in their filenames — content is misplaced, not the jig |
 | 1.5 Multi-prompt jigs | the permitted patterns cover everything wanted — then `model_calls` is over-build |
 | 5.1 Layer 2 sizing | per-set ablation shows a broad set narrows attention on unrelated cards (R50) |

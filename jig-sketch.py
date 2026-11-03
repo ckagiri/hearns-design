@@ -1,11 +1,11 @@
 """
-Jig runner — happy-path sketch, v4.
+Jig runner — happy-path sketch, v5.
 
 Pseudocode, not runnable. Elisions marked `...`.
 Section refs are to harness-core-v3 (§C) and harness-policy-v3 (§P).
 Vocabulary: `task` in code = card in prose. Same thing (§C3.2).
 Rewrite of v2; v4 adds the registries (tools, skills, checks, hooks), the
-emit-time edge gate, and the dep predicate. Diffs at the foot.
+emit-time edge gate, and the dep predicate; v5 applies ADR-0008. Diffs at the foot.
 
 Shape of the thing:
 
@@ -99,6 +99,10 @@ SHAPES: dict[str, ShapeFn]   = {}   # 'children' | 'gate' | 'artifact' | 'select
 SKILLS: dict[str, list[str]] = {}   # KIND -> skill names.  Loaded from
                                     # harness/config/skills.yaml. Six lines,
                                     # written by hand at pin time. See §Skills.
+LADDER: dict[str, list[Rung]] = {}  # KIND -> rungs.  Built from the flat ladder in
+                                    # harness/config/checks.yaml, the only home
+                                    # of a check definition (rule 137). A rung
+                                    # naming no kinds serves every kind.
 
 # HOOKS is the one registry worth a library.  A plain dict[str, list[Fn]] has a
 # specific failure: a typo'd hook name registers a function that silently never
@@ -168,7 +172,7 @@ class Jig:
                                      # inlining it would make §P2's "jig count is bounded
                                      # by kind" expensive to honour.
     preamble: str                    # layer 1
-    tools: list[str]                 # layer 3 — per ROLE; absence is the gate (rule 135)
+    tools: list[str]                 # layer 3 — per KIND; absence is the gate (rule 135)
 
     # NOTE: `skills` is NOT here. v3 had it, and that was wrong: Role.kinds is a
     # list and Role.jig is one jig, so a role serving two kinds gave both the
@@ -178,8 +182,8 @@ class Jig:
     schema: dict                     # output contract (§P1.5)
     outcomes: frozenset[Outcome]     # closed. what this kind is allowed to return
     emits: list[EmitSpec]
-    passive: list[CheckSpec]         # post_tool_call, VISIBLE to the producer
-    check: CheckSpec | None          # pre_commit oracle, HIDDEN from the producer
+    # NOTE: no checks here either. A jig naming commands would put a domain in
+    # the jig (P2). Rungs live in LADDER, and the card's check_spec picks them.
     max_turns: int = 20              # see §P1.6: contested. the lease is the real bound.
     max_repairs: int = 1             # schema repair (§P1.5), bounded and explicit
 
@@ -193,15 +197,50 @@ class Role:
     provider_settings: ProviderSettings   # typed, per-adapter. resolved params enter
                                           # the pin, never the abstract level (rule 134)
     jig: Jig
+    jig_args: dict                   # values for the jig's slots, e.g. verify_input.
+                                     # they render into layer 0, so they enter kind_hash.
     lease_ttl: timedelta
     max_parallel: int
     max_children: int
     gate: str | None                 # 'depth <= 1'
 
 
+@dataclass(frozen=True)
+class Rung:
+    """One entry in checks.yaml."""
+    rung: int
+    type: str                        # a CHECKS key
+    spec: dict                       # steps, timeout, where
+    visible: bool                    # False: never rendered into layer 8 (principle 5).
+                                     # A post_tool_call rung must be True: its output
+                                     # goes straight back to the producer.
+    trigger: str = "pre_commit"      # or post_tool_call
+    kinds: list[str] | None = None   # None: every kind
+    always: bool = False             # check_spec cannot omit it. Rung 0.
+
+
+# Rule 136, at startup. Every kind in a role shares that role's jig by construction,
+# since a role holds one; the two checks here are what construction cannot give.
+def validate_roles(roles: list[Role]) -> dict[tuple[str, str], Role]:
+    jig_of_kind, role_of_slot = {}, {}
+    for role in roles:
+        for kind in role.kinds:
+            if jig_of_kind.setdefault(kind, role.jig) != role.jig:
+                raise ConfigError("kind_has_two_jigs", kind)
+            for tier in role.tiers:
+                if (kind, tier) in role_of_slot:
+                    raise ConfigError("slot_has_two_roles", kind, tier)
+                role_of_slot[(kind, tier)] = role
+    return role_of_slot
+
+
+class ConfigError(Exception):    ...   # startup. never a fallback.
 class SplitRejected(Exception):  ...   # emit-time gate. classified, never a bare assert.
 class StaleWriter(Exception):    ...
 class ReplayMiss(Exception):     ...
+
+
+role_of_slot = validate_roles(load_roles())    # fails the process before any claim
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -214,10 +253,10 @@ class ReplayMiss(Exception):     ...
 @dataclass(frozen=True)
 class Block:
     layer: int
-    scope: str                       # role|house|kind|run|card|attempt — §P5.1's column
+    scope: str                       # house|kind|run|card|attempt — §P5.1's column
     text: str
 
-STABLE = {"role", "house", "kind", "run"}   # cacheable across cards
+STABLE = {"house", "kind", "run"}   # cacheable across cards
 
 # One fixed name per layer. The number is an id, not the send order: see render().
 LAYER_NAMES = {
@@ -229,10 +268,10 @@ LAYER_NAMES = {
 def render(role, task, deps, orientation, last_attempt) -> list[Block]:
     j = role.jig
     b = [
-        Block(0, "role",    read(j.system_ref)),             # system: + the outcome enum, verbatim
+        Block(0, "kind",    fill(read(j.system_ref), role.jig_args)),   # system: + the outcome enum, verbatim
         Block(1, "house",   j.preamble),                     # house
         Block(2, "kind",    load_skills(SKILLS[task.kind])),   # skills ← by KIND, not by jig
-        Block(3, "role",    tool_schemas_text(j.tools)),     # tools
+        Block(3, "kind",    tool_schemas_text(j.tools)),     # tools
         Block(8, "kind",    check_definitions(task.kind)),   # checks ← MOVED UP. see note 1 at foot.
         Block(4, "run",     orientation + constraints_verbatim(task.root_id)),   # orientation
         Block(5, "card",    render_task_layer(task)),        # task
@@ -243,7 +282,7 @@ def render(role, task, deps, orientation, last_attempt) -> list[Block]:
     # Static invariant, milliseconds, high value: the stable prefix must be
     # contiguous, or provider-side prefix caching buys nothing.
     first_variable = next(i for i, x in enumerate(b) if x.scope not in STABLE)
-    if not all(x.scope in STABLE for x in b[:first_variable]):
+    if any(x.scope in STABLE for x in b[first_variable:]):
         raise HarnessBug("cacheable prefix is not contiguous")
     return b
 
@@ -434,7 +473,7 @@ class CachedModel:
 def dispatch_tool(task, attempt, role, call) -> str:
     t = TOOLS.get(call.name)
 
-    # 1 SCOPE — cheapest, most absolute. Not in the role's list => never in the
+    # 1 SCOPE — cheapest, most absolute. Not in the jig's list => never in the
     #           schema either, so this branch should be unreachable. Alarm if hit.
     if call.name not in role.jig.tools:
         return audit_deny(task, attempt, call, "out_of_scope")
@@ -463,8 +502,8 @@ def dispatch_tool(task, attempt, role, call) -> str:
     # cache miss you would blame on the model. Non-optional at the type level.
     out = t.normalize(raw)
 
-    for spec in role.jig.passive:     # welded to the write, VISIBLE by design
-        out += "\n" + CHECKS[spec.type].run(spec, task, best_effort=True)
+    for r in rungs_for(task, "post_tool_call"):     # welded to the write, VISIBLE by design
+        out += "\n" + CHECKS[r.type].run(r, task, best_effort=True)
 
     audit(task, attempt, call, decision="allowed", args_digest=sha256(call.args))
     return out
@@ -491,8 +530,7 @@ def run_jig(role, task, attempt) -> JigResult:
 
     # The oracle. Fresh container, spec mounted from a ref the working
     # container never had. FOUR states, never two.
-    return replace(result, check=run_oracle(j.check, task) if j.check
-                                 else CheckResult("not_applicable"))
+    return replace(result, check=run_oracle(task))
 
 
 def _turn_loop(role, task, attempt, req, prompt_ref) -> JigResult:
@@ -577,13 +615,39 @@ def _classify_payload(j, payload, resp, role, prompt_ref) -> JigResult:
 # substrate gives deterministic replay and per-attempt cost accounting that an
 # external runner bypasses along with the cache and the ledger.
 
-def run_oracle(spec, task) -> CheckResult:
-    """Best-effort. A check that can crash a card is worse than no check."""
+def check_definitions(kind) -> str:
+    """Layer 8. Kind-scoped, so it cannot narrow by check_spec; the card's own
+       rungs reach it through layer 5. Hidden rungs are not rendered, but
+       kind_hash still covers them: they decide outcomes (§C8.1.1)."""
+    return render_rungs(r for r in LADDER.get(kind, []) if r.visible)
+
+
+def rungs_for(task, trigger) -> list[Rung]:
+    """The kind's ladder, narrowed by the card's check_spec, cheapest first.
+       Neither a ladder nor a check_spec is required: core §4.1's column is nullable,
+       and a kind with no rungs is not_applicable, never a crash."""
+    chosen = (task.check_spec or {}).get("rungs", [])
+    return [r for r in LADDER.get(task.kind, [])
+            if r.trigger == trigger and (r.always or r.rung in chosen)]
+
+
+def run_oracle(task) -> CheckResult:
+    """Best-effort. A check that can crash a card is worse than no check.
+       Stops at the first failure, so a card that fails rung 0 never gets a
+       database. expect: FAIL inverts the test rung on a test card; elided."""
+    rungs = rungs_for(task, "pre_commit")
+    if not rungs:
+        return CheckResult("not_applicable")
+    box = Lazy(fresh)                        # one container, started only if a rung needs it
     try:
-        r = CHECKS[spec.type].run(spec, task, hidden=True, container=fresh())
+        for rung in rungs:
+            where = None if rung.spec["where"] == "host" else box.get()
+            r = CHECKS[rung.type].run(rung, task, hidden=not rung.visible, container=where)
+            if not r.ok:
+                return CheckResult("failed", detail=truncate(r.detail, N))
     except (SpawnFailure, Timeout, BrokenPipe):
         return CheckResult("unavailable")    # NOT 'passed'. See note 2.
-    return CheckResult("passed" if r.ok else "failed", detail=truncate(r.detail, N))
+    return CheckResult("passed")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -609,7 +673,8 @@ def shape_children(role, task, payload, spec, emitted) -> list[NewTask]:
             touch_set=c["touch_set"], open_questions=c.get("open_questions", []),
             deps=[resolve(d, parent) for d in c.get("deps", [])],
             state="awaiting_review" if gated(role, parent) else "pending",
-            config_version=task.config_version, config_hash=task.config_hash,
+            config_version=task.config_version,
+            config_hash=slice_hash(c["kind"], tier_for(c)),   # the child's slice, not the parent's
         )
         for c in payload["children"]
     ]
@@ -623,6 +688,16 @@ def shape_children(role, task, payload, spec, emitted) -> list[NewTask]:
     reject_if_touch_sets_collide(kids)     # false independence
     reject_if_edge_carries_nothing(kids)   # false dependence
     return kids
+
+
+def slice_hash(kind, tier) -> str:
+    """Rule 136. Every emitted card needs a hash, so every shape comes through here
+       and none can skip the check. Startup validation cannot see this: the splitter
+       picks tiers at run time. Without it the card sits `pending` forever and looks
+       like a slow run, which rule 132 forbids. worked-run-catalog's .5 and .7 are this."""
+    if (kind, tier) not in role_of_slot:
+        raise SplitRejected("no_role", kind, tier)
+    return pin.kind_hash[(kind, tier)]
 
 
 def reject_if_edge_carries_nothing(kids):
@@ -743,6 +818,22 @@ def heartbeat(task, attempt, ttl):
         sleep(ttl / 3)
 
 
+# ══════════════════════════════════════════════════════════════════════
+# What changed in v5 (ADR-0008)
+# ══════════════════════════════════════════════════════════════════════
+#
+#   · Jig.passive and Jig.check are gone. LADDER, loaded from checks.yaml, is the
+#     only home of a check; check_spec picks rungs; layer 8 shows visible ones.
+#   · run_oracle walks the card's rungs, cheapest first, and owns not_applicable.
+#   · tools stay on the Jig, and rule 135 now says per kind.
+#   · layers 0 and 3 are kind-scoped; "role" leaves the scope vocabulary.
+#   · Role.jig_args fills jig slots such as verify_input.
+#   · validate_roles at startup, slice_hash at emit. Rule 136.
+#   · a child's config_hash is its own (kind, tier) slice. v4 copied the parent's,
+#     so every child of a split recorded the split's hash.
+#   · render()'s prefix check could never fire: it tested the slice that is all-STABLE
+#     by definition. It now tests the rest.
+#
 # ══════════════════════════════════════════════════════════════════════
 # What changed in v4 (registries)
 # ══════════════════════════════════════════════════════════════════════
