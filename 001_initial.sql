@@ -107,6 +107,9 @@ CREATE TABLE task_attempts (
   task_id       text NOT NULL REFERENCES tasks(id),
   n             int  NOT NULL,     -- tasks.attempts at claim; the fence
   worker        text NOT NULL,
+  kind          text NOT NULL,     -- what the card was at claim. Never updated (rule 151)
+  tier          text NOT NULL,
+  config_hash   text NOT NULL,
   failure_class text,              -- NULL while open and on success; a parked attempt's outcome
   check_ref     text,              -- content hash; what retry layer 7 reads. Visible rungs only
   hidden_check_ref text,           -- content hash; hidden rungs. Never rendered (ADR-0013)
@@ -167,6 +170,16 @@ CREATE TABLE model_cache (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX model_cache_root_idx ON model_cache (root_id);
+
+-- [ADR-0014] Provider failures, under the same key. Replay re-raises one unless model_cache has a response for that
+-- key. A live run never reads this table, so it cannot serve a failure. A separate table keeps response NOT NULL.
+CREATE TABLE model_failures (
+  key           text PRIMARY KEY,
+  failure_class text NOT NULL,
+  root_id       text NOT NULL REFERENCES runs(root_id),
+  created_at    timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX model_failures_root_idx ON model_failures (root_id);
 
 -- ─── Content store ───────────────────────────────────────────────────────────────────────────────
 

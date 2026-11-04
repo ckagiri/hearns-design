@@ -30,7 +30,7 @@ WITH candidate AS (
     FROM candidate WHERE tasks.id = candidate.id
   RETURNING tasks.*
 ), opened AS (
-  INSERT INTO task_attempts (task_id, n, worker)
-  SELECT id, attempts, $3 FROM claimed
+  INSERT INTO task_attempts (task_id, n, worker, kind, tier, config_hash)
+  SELECT id, attempts, $3, kind, tier, config_hash FROM claimed
 )
 SELECT * FROM claimed;

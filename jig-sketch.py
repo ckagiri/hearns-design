@@ -483,8 +483,16 @@ class CachedModel:
             record_call(req, key, served_from_cache=True, cost=0)    # ADR-0012
             return hit
         if self.mode == "replay":
+            # Rule 152: a response won above, so this key only ever failed.
+            if failure := model_failures.get(key):
+                record_call(req, key, served_from_cache=True, cost=0)
+                raise HarnessFailure(failure)
             raise ReplayMiss(key)                    # Gate A asserts zero outbound
-        resp = self.inner.complete(req)
+        try:
+            resp = self.inner.complete(req)
+        except HarnessFailure as e:
+            model_failures.put(key, e.failure_class) # upsert. Live never reads this
+            raise
         cache.put(key, resp)                         # tokens, cost recorded here
         return resp
 

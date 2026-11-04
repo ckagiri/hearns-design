@@ -195,7 +195,7 @@ deleted one.
 | 82 | A behavioural card never owns its own test file. |
 | 83 | A test card's check is that the test runs and **fails**. Its implementation card depends on it. |
 | 84 | The workspace is a worktree, a container and a database clone, provisioned and destroyed together. |
-| 85 | Git happens on the host; execution in the container. Commit hooks are unreachable from inside the card. |
+| 85 | Git happens on the host; execution in the container. *(Commit hooks are unreachable from inside the card)* → **amended**, ADR-0014: the card can write the worktree's `.git`, so that holds only through rule 150's runner. |
 | 86 | *(then resets the worktree)* → **amended**, ADR-0011: the reaper kills the container before requeuing, then removes the attempt's worktree and drops the clone. Only a failed kill blocks requeue. |
 | 87 | No worker connects to the template database. |
 | 88 | `integrate`'s check is rung 1 on the merged tree, not a clean merge. |
@@ -281,7 +281,7 @@ deleted one.
 | 138 | For `execute`, tier and effort follow contract shape alone. Whether a card needs a test is a separate question, answered by `check_spec`. Behavioural is not a kind, a jig or a contract shape. |
 | 139 | The harness adds a file to layer 6 only from a hand-written table keyed by kind, on a trigger that is a declared field of the card: never the intent text, the contract's wording or a model call. The table and files enter `config_hash`, each row names a risk, and each file obeys P5 and P6. Built when a RED case asks for it. |
 | 140 | A dep names a card on the board or one emitted with it, and emitted cards form no cycle. Both are checked at emit, because the readiness predicate reads a missing dep as satisfied and cannot see a cycle. |
-| 141 | Each reaper pass lists the host's `card_*` containers, databases and worktrees, then reads open `task_attempts` rows, and removes anything no open row names. In that order, so a live attempt is never swept. The committed attempt's branch stays. |
+| 141 | Each reaper pass lists the host's `card_*` containers, databases and worktrees, then reads open `task_attempts` rows, and removes anything no open row names. In that order, so a live attempt is never swept. Worktrees go by path, then `git worktree prune`, because `git worktree remove` refuses a tampered one (ADR-0014). The committed attempt's branch stays. |
 | 142 | Provisioning failures and drain releases are free, up to `runs.max_free_retries`. A failure no retry can fix halts the run rather than spending attempts, and only an unambiguous provider signal counts. A card never sees a free failure, and escalation counts charged attempts only. |
 | 143 | One host for now. Kill and workspace teardown are host-local and the reaper runs from any worker. Several hosts need the host in `lease_holder` and teardown refused elsewhere. |
 | 144 | Anything a command produced is normalized before it can enter model-visible text: tool results, `post_tool_call` rung output and layer 7's check output. A normalizer removes only what differs between two correct runs, enters `kind_hash`, and what it removes stays in `tool_audit`. Promotes R-new-5, ADR-0012. |
@@ -290,6 +290,9 @@ deleted one.
 | 147 | Layer 7 and the effort rung read evidence attempts only: those whose failure says something about the work. A dead worker, a stall, a free failure and a parked outcome leave the next prompt byte-identical. Hidden rungs' output is never rendered. ADR-0013. |
 | 148 | The reaper revokes the lease before teardown, rechecking expiry, so a late commit's fence fails and a live worker keeps its card. ADR-0013. |
 | 149 | A failed `retry_safe: false` card goes to `awaiting_review`, on any failure but `provision_failed`, with its worktree and database kept until a verb acts. ADR-0013. |
+| 150 | Host git treats the worktree as untrusted input. Every host git call goes through one runner: the git directory from the harness's own record and never from the worktree's `.git`, the work tree pinned, hooks and fsmonitor off, host config scrubbed. A staged gitlink is a touch-set violation. ADR-0014. |
+| 151 | A `task_attempts` row records the card's `kind`, `tier` and `config_hash` at claim, and they are never updated. A query about what ran reads the attempt. ADR-0014. |
+| 152 | Every provider failure is recorded in `model_failures`. Replay re-raises it, a recorded response wins over it, and a live run never reads it. ADR-0014. |
 
 ---
 
@@ -377,6 +380,7 @@ deleted one.
 | R61 | **Context exhaustion inside a card produces a confident summary.** The lease bounds time and the deadline bounds the attempt; neither bounds the window. A card that runs out of context and then reports success is indistinguishable from one that succeeded. | **None.** Recorded per rule 62 as a residual. This is ADR-0001's commission case arriving by a route the pair cannot see, and diff-reading verify (E2 arm D) is the only proposed mechanism that would catch it. |
 | R62 | **A normalizer removes something the card needed.** A card chasing a slow query sees no timing, and nothing tells it that it is missing. | The over-stripping test in core §11; `raw_ref` for diagnosis. Timing a contract needs should be a check's result rather than a log line. ADR-0012. |
 | R63 | **A broken oracle looks like bad luck.** Every card spends its free retries on `check_unavailable` and then waits for a person, with nothing halting the run. Safe, because nothing reaches `done`, but slow and costly to notice. | The query in `queries/lessons.sql`. ADR-0011's circuit breaker if it recurs. ADR-0013. |
+| R64 | **A host gate reads a file the card wrote.** `namespace_check` parses the diff on the host, and manifest regeneration runs there. Pinning git says nothing about a planted symlink or a hostile parser input. | **None yet.** Needs its own look before P1-9 ends. ADR-0014. |
 
 ---
 
@@ -488,6 +492,7 @@ have never been observed** — and rules 121 and 132 are the model for what to d
 Append-only. One line per change. Date, ADR where one exists, what moved.
 
 ```
+2026-11-04  ADR-0014  host git ignores the worktree's .git; attempts record what the card was; replay reproduces provider failures; rules 85, 141 amended; rules 150–152; R64
 2026-11-04  ADR-0013  what reaches done and what a retry learns: oracle decides, six states stand, misclassified rewrites in place, evidence attempts, revoke before teardown; rule 68 amended; rules 145–149; R63
 2026-11-04  ADR-0012  command output normalized before the model sees it; replay re-executes tools; core §8's retry claim narrowed; rule 144; R62; R-new-5 promoted
 2026-11-04  —         001_initial.sql reconstructed from the documents, the original having been lost; harness/ledger/sql and queries drafted

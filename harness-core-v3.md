@@ -260,6 +260,9 @@ CREATE TABLE task_attempts (
   task_id       text NOT NULL REFERENCES tasks(id),
   n             int  NOT NULL,     -- tasks.attempts at claim; the fence
   worker        text NOT NULL,
+  kind          text NOT NULL,     -- what the card was at claim. Never updated (rule 151)
+  tier          text NOT NULL,
+  config_hash   text NOT NULL,
   failure_class text,              -- NULL while open and on success; a parked attempt's outcome
   check_ref     text,              -- content hash; what retry layer 7 reads. Visible rungs only
   hidden_check_ref text,           -- content hash; hidden rungs. Never rendered (ADR-0013)
@@ -328,7 +331,7 @@ considering object storage; it makes the backend question academic for years.
 | Class | Policy |
 |---|---|
 | `tasks`, `task_attempts`, `runs`, `reviews`, `notes`, `tool_audit` | **Never deleted.** |
-| `model_cache` | TTL by run |
+| `model_cache`, `model_failures` | TTL by run |
 | content — diffs, artifacts | long TTL, tiered |
 | content — check and container logs | short TTL, truncated on write |
 
@@ -432,8 +435,8 @@ WITH candidate AS (
     FROM candidate WHERE tasks.id = candidate.id
   RETURNING tasks.*
 ), opened AS (
-  INSERT INTO task_attempts (task_id, n, worker)
-  SELECT id, attempts, $3 FROM claimed
+  INSERT INTO task_attempts (task_id, n, worker, kind, tier, config_hash)
+  SELECT id, attempts, $3, kind, tier, config_hash FROM claimed
 )
 SELECT * FROM claimed;
 ```
@@ -539,7 +542,8 @@ commit, since the row is `done`, and one left by the deadline flip, which runs n
 also lists the host's `card_*` containers, databases and worktrees, **then** reads the open
 `task_attempts` rows, and removes anything whose name no open row derives. The order matters: a row
 opens in the claim, before anything is provisioned, so reading rows last can never sweep a live attempt.
-The branch of a committed attempt stays, because `integrate` needs it.
+Worktrees go by path, then `git worktree prune` (§6). The branch of a committed attempt stays, because
+`integrate` needs it.
 
 **Why there is no watchdog watching the watchdog.** *(Added 2026-08-18.)* A comparable tool answers
 stall detection with a four-role escalation chain — a watcher that may not kill, an executioner it
@@ -668,6 +672,26 @@ gives the card write access to every sibling's worktree. So: the harness creates
 container mounts it at a fixed path, the card edits and runs checks inside, and the harness commits
 from the host.
 
+**Host git treats the worktree as untrusted input** (rule 150, ADR-0014). The worktree's `.git` is a file
+inside that mount, and it tells git which repository to use. A card that points it at a repository of its
+own can run a program on the host through a plain `git status` or `git commit`, and can make a plain diff read
+empty. So every host git call goes through one runner, which takes the git directory from the harness's own
+record:
+
+```sh
+env -i PATH=… GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+  git --git-dir=<repo>/.git/worktrees/<name> --work-tree=<worktree> \
+      -c core.hooksPath=/dev/null -c core.fsmonitor=false -c user.name=… -c user.email=… <command>
+```
+
+- **A staged gitlink is a touch-set violation,** even when its path is in the set. A repository nested in the
+  worktree stages as one path, which hides its contents from `diff_paths()`.
+- **Teardown removes a worktree by path, then runs `git worktree prune`,** because `git worktree remove` refuses
+  a tampered one, even with `--force`.
+- **`.git` is masked read-only in the container,** as a second layer for people rather than the harness. Rule 149
+  keeps failed worktrees, and running git in one could run the card's program. Review shows kept work through the
+  runner. The mask covers only the top-level pointer and is untested, so nothing depends on it.
+
 **Ephemeral per card, not per worker.** A reused container accumulates installed packages, caches
 and state, which makes environment-dependent failures reachable. Every attempt being cold is a
 property retries already rely on.
@@ -704,7 +728,7 @@ failure below.
 | Provision: worktree, container, clone | after claim, each attempt | Attempt ends as `provision_failed` and retries with backoff, free up to `runs.max_free_retries` (ADR-0011). Infrastructure, not `harness_bug`. |
 | Kill the container | before any requeue | **Blocks requeue.** The row stays put; the next reaper pass retries. |
 | Drop the attempt's database and filestore | before any requeue | Logged. Requeue proceeds: a retry never reuses the name, and §10 detects the orphan. |
-| Remove the attempt's worktree and branch | before any requeue | Logged. Requeue proceeds: a retry never reuses the names, and the §5.4 sweep collects the worktree. |
+| Remove the attempt's worktree and branch, by path and then prune | before any requeue | Logged. Requeue proceeds: a retry never reuses the names, and the §5.4 sweep collects the worktree. |
 
 A blocked teardown is the inert failure §5.4 relies on: the card stalls visibly rather than running
 next to a live writer or on a dirty worktree.
@@ -738,9 +762,11 @@ Every human action is a row in `reviews`: what they had open, what they chose, w
 ## 8. Determinism and replay
 
 1. Record every response in `model_cache`, keyed on the **rendered prompt** plus model, **reasoning
-   effort**, sampling params, tool-schema hash and recalled note ids.
+   effort**, sampling params, tool-schema hash and recalled note ids. Record every provider failure in
+   `model_failures` under the same key (rule 152, ADR-0014).
 2. Replay serves from cache and makes zero outbound calls. Tools and checks re-execute, and only the
-   model is served from cache. Any difference is a genuine difference in your code.
+   model is served from cache. A recorded failure re-raises unless a response exists for that key, which
+   wins. A live run never reads `model_failures`. Any difference is a genuine difference in your code.
 3. Interleaving may differ between runs; the **causal graph** will not. Assert on the terminal
    graph, not execution order.
 4. Content refs are immutable, so an old run is inspectable exactly as each step saw it.
@@ -757,13 +783,14 @@ and corrupts nothing.
 
 | Case | First call's key | Expected |
 |---|---|---|
-| Replay | unchanged | every call hits; a miss raises |
+| Replay | unchanged | every call hits or re-raises; a miss raises |
 | Free retry (ADR-0011) | unchanged | calls hit up to where the failed attempt stopped |
 | Charged retry after evidence: a failed check, malformed output, a turn limit | moved by effort or model, and layer 7 | none hit |
 | Retry after a dead worker or a stall (ADR-0013) | unchanged, unless it is the last delivery | calls hit up to where the attempt stopped |
 | Reset-from-a-point (§8.2) | unchanged upstream | upstream hits; the raised subtree does not |
 
-A hit writes a `model_calls` row at zero cost, so these rates are a query.
+A hit writes a `model_calls` row at zero cost, so these rates are a query. A free failure that later succeeded
+is not replayed, so `attempts` may be lower in replay. The terminal graph does not change.
 
 **How the guarantee is kept.** *(Added 2026-08-18. ADR-0004.)* The zero-outbound-calls promise in
 point 2 is only as good as the layer that can make a call. Where the card runtime is a library that
@@ -825,8 +852,9 @@ key, not this hash. `runs.config_pin` remains the **full** snapshot. Two artifac
 card's slice of it the same*. That split is what makes the payoff query work:
 
 ```sql
-select project, root_id, outcome, attempts
-from tasks where kind = 'execute' and config_hash = :h;
+select t.project, t.root_id, a.task_id, a.n, a.failure_class
+from task_attempts a join tasks t on t.id = a.task_id
+where a.kind = 'execute' and a.config_hash = :h;
 ```
 
 **Hash the rendered artifact, not the file.** Layers 0, 1, 2, 3 and 8 sit above the cache line and
@@ -974,7 +1002,7 @@ nobody can write a query against is a field to remove.
 -- which contract shapes produce refusals
 select t.contract_completeness, a.failure_class, count(*)
 from task_attempts a join tasks t on t.id=a.task_id
-where t.kind='execute' and t.project=:p and a.failure_class is not null group by 1,2;
+where a.kind='execute' and t.project=:p and a.failure_class is not null group by 1,2;
 
 -- what facts were missing, per root intent
 select r.intent_digest, a.refusal->'needs'
@@ -1042,7 +1070,11 @@ good**. This section is only the first.
 - **Teardown tests** — make the kill fail, then the reset, then the drop. Assert the first two block
   requeue and the third does not. Point teardown outside `workspace_root`; assert it refuses.
 - **Replay tests** — same run twice from cache; assert identical terminal graph. Cover `post_tool_call`
-  output and a card that reaches attempt 2.
+  output and a card that reaches attempt 2. A run with a `provider_refused` attempt replays to the same graph
+  with zero outbound calls. A rate-limited key that then succeeded serves its response. A key that never
+  succeeded reaches the same terminal state. A live call ignores a recorded failure (ADR-0014).
+- **Attempt record tests** — escalate a card and rewrite another to `split`. Each earlier attempt keeps its
+  `kind`, `tier` and `config_hash`, and the lessons queries still count them as what they were (ADR-0014).
 - **Normalizer stability tests** — for each tool and check type, two runs with a different clock, PID and
   attempt number give identical bytes. Odoo's test uses a captured real log. A failing fixture's
   normalized output still contains its failure text and exit status.
@@ -1059,6 +1091,10 @@ Before anything is built on top of the substrate:
 
 > **Does crash recovery work reliably under contention?** Includes killing a container mid-write and
 > confirming clean requeue, worktree removal and clone collection.
+
+It includes a tampered worktree (rule 150). Plant a `.git` pointer with a hook, an fsmonitor and a filter, then
+assert that no marker appears, the commit lands on the real branch, `diff_paths()` reports the true paths and
+teardown clears the worktree. Plant a nested repository and assert rejection.
 
 This is harder to test than a poll-loop crash, and it is the right place to spend the difficulty.
 

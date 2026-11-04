@@ -5,7 +5,7 @@
 -- which contract shapes produce refusals
 select t.contract_completeness, a.failure_class, count(*)
 from task_attempts a join tasks t on t.id=a.task_id
-where t.kind='execute' and t.project=:p and a.failure_class is not null group by 1,2;
+where a.kind='execute' and t.project=:p and a.failure_class is not null group by 1,2;
 
 -- what facts were missing, per root intent
 select r.intent_digest, a.refusal->'needs'
@@ -21,13 +21,15 @@ from runs r join tasks t on t.root_id=r.root_id
 where r.intent_digest=:d group by 1;
 
 -- did this card's slice of the system behave the same across runs (core §8.1.1)
-select project, root_id, outcome, attempts
-from tasks where kind = 'execute' and config_hash = :h;
+select t.project, t.root_id, a.task_id, a.n, a.failure_class
+from task_attempts a join tasks t on t.id = a.task_id
+where a.kind = 'execute' and a.config_hash = :h;
 
--- cost and tokens by tier and kind, from what was called (core §9.2)
-select t.tier, t.kind, sum(m.cost_usd) as cost_usd, sum(m.tokens_in) as tokens_in,
+-- cost and tokens by tier and kind, from what was called, as it was when called (core §9.2, rule 151)
+select a.tier, a.kind, sum(m.cost_usd) as cost_usd, sum(m.tokens_in) as tokens_in,
        sum(m.tokens_out) as tokens_out
-from model_calls m join tasks t on t.id = m.task_id
+from model_calls m join task_attempts a on a.task_id = m.task_id and a.n = m.attempt
+                   join tasks t on t.id = m.task_id
 where t.project = :p group by 1,2 order by 3 desc;
 
 -- attempts and outcome distributions (core §9.2)
@@ -35,8 +37,9 @@ select kind, attempts, count(*) from tasks where project = :p group by 1,2 order
 select kind, outcome, count(*) from tasks where project = :p group by 1,2 order by 1,2;
 
 -- reasoning tokens by kind and effort, against attempts (core §9.2)
-select t.kind, m.effort, sum(m.reasoning_tokens) as reasoning_tokens, avg(t.attempts) as avg_attempts
-from model_calls m join tasks t on t.id = m.task_id
+select a.kind, m.effort, sum(m.reasoning_tokens) as reasoning_tokens, avg(t.attempts) as avg_attempts
+from model_calls m join task_attempts a on a.task_id = m.task_id and a.n = m.attempt
+                   join tasks t on t.id = m.task_id
 where t.project = :p group by 1,2;
 
 -- check latency as a fraction of wall clock: where it dominates, workers buy less (core §9.2)

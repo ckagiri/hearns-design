@@ -161,11 +161,13 @@ twelve real ones, and better, because a fake card fails on demand.
 Hook resolution across worktrees — `core.hooksPath`, worktree-local config, inherited settings — is
 fiddly, and the failure is nasty: **a card's commit behaves differently inside its worktree than on
 the main checkout, so nondeterminism enters through git config rather than through the model.** It
-presents as a flaky card. DeepSeek Harness built a wrapper for exactly this; read it if P1-9 hits
-the problem.
+presents as a flaky card. DeepSeek Harness's `scripts/install-lefthook.mjs` wrapper solves a different
+problem, installs overwriting contributors' shared hooks. If P1-9 hits this, read its runtime runner instead,
+`packages/experimental/worktree/src/process.ts` and `index.ts`, which disables hooks.
 
-Two responses: the workload repo has no hooks, asserted by `reset-workload.sh`; and Gate A asserts
-the hook configuration a card sees inside its worktree.
+Three responses: rule 150's runner turns hooks off and scrubs host config on every host git call (ADR-0014); the
+workload repo has no hooks, asserted by `reset-workload.sh`; and Gate A asserts the hook configuration a card sees
+inside its worktree.
 
 ### Manufacture the unhappy paths
 

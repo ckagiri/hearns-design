@@ -545,6 +545,9 @@ Two things fall out of this that are worth more than the convenience:
   on the host, **where the card cannot reach them.** Same property that makes the check oracle
   hidden, now extended to the structural gates.
 
+The worktree's `.git` is inside that mount, so the card can write it. Both properties hold only because host
+git ignores it and goes through one runner (rule 150, core §6, ADR-0014).
+
 ### 6.3 The kill handle closes §16
 
 §16 is the zombie writer: a card whose lease expired and whose fencing token is stale, still
@@ -1052,7 +1055,7 @@ Continuing findings-2's numbering.
 | 82 | A behavioural card never owns its own test file. A `touch_set` containing both `models/*.py` and `tests/*.py` is a malformed split. |
 | 83 | A test card's check is that the test runs and **fails**. Its implementation card depends on it. |
 | 84 | The workspace is a worktree, a container and a database clone, provisioned and destroyed together. |
-| 85 | Git happens on the host; execution happens in the container. Commit is a harness operation and the `pre_commit` hooks are unreachable from inside the card. |
+| 85 | Git happens on the host; execution happens in the container. Commit is a harness operation and the `pre_commit` hooks are unreachable from inside the card, through rule 150's runner (ADR-0014). |
 | 86 | The reaper kills the container before requeuing, then removes the attempt's worktree and drops the clone (amended, ADR-0011). |
 | 87 | No worker connects to the template database. |
 | 88 | `integrate`'s check is rung 1 on the merged tree, not a clean merge. |

@@ -253,7 +253,7 @@ report("the reaper does not select a parked card", rows(body("reaper_candidates"
 
 # The way back cannot strand a card, and the record survives it.
 rows("UPDATE tasks SET attempts=3, max_attempts=3 WHERE id='t-p';")
-rows("INSERT INTO task_attempts (task_id,n,worker) VALUES ('t-p',3,'w') ON CONFLICT DO NOTHING;")
+rows("INSERT INTO task_attempts (task_id,n,worker,kind,tier,config_hash) VALUES ('t-p',3,'w','execute','cheap','h') ON CONFLICT DO NOTHING;")
 rows("UPDATE task_attempts SET ended_at=now(), failure_class='needs_context' WHERE task_id='t-p' AND n=3;")
 run("review_return", "'t-p'", "NULL", "NULL", "NULL", "NULL", "NULL", "now() + interval '1 hour'")
 report("a returned card with no attempts left is claimable", claim() == "t-p:4", state("t-p"))
@@ -268,6 +268,12 @@ run("rekind_split", "'t-m'", "'w1'", 1, "'cheap'", "'h2'")
 end("t-m", 1, "misclassified", refusal="""'{"reason":"three deliverables"}'::jsonb""")
 report("a misclassified card becomes a split on its own row", rows("SELECT kind||'/'||state||'/'||config_hash FROM tasks WHERE id='t-m';") == "split/pending/h2")
 report("its dependent is held, and it is claimed as a split", claim() == "t-m:2" and claim() == "", state("t-d"))
+attempt_was = "SELECT kind||'/'||config_hash FROM task_attempts WHERE task_id='t-m' AND n={};"
+report("a rewrite leaves the earlier attempt as it was, and the new one records the split", rows(attempt_was.format(1)).startswith("execute/") and rows(attempt_was.format(2)) == "split/h2", rows(attempt_was.format(1)))
+rows("INSERT INTO model_calls (task_id,attempt,seq,model,cache_key,cost_usd) VALUES ('t-m',1,1,'m','k',0.5);")
+lessons = psql((repo / "queries/lessons.sql").read_text(), extra=VARS)[1]
+report("the lessons queries still count a rewritten card's refusal as execute", "|misclassified|1" in lessons, lessons[:200])
+report("its earlier spend stays booked to what it was", "|execute|0.5" in lessons, lessons[:200])
 run("rekind_split", "'t-m'", "'w1'", 2, "'cheap'", "'h3'")
 report("a split cannot be rewritten again", rows("SELECT state||'/'||config_hash FROM tasks WHERE id='t-m';") == "leased/h2")
 park("t-m", "w1", 2, "misclassified")
@@ -297,6 +303,7 @@ report("a dead worker and a stall are not evidence", run("last_evidence_attempt"
 report("but both still count against the crash bound", state("t-e").startswith("pending/2/3"), state("t-e"))
 run("escalate_tier", "'t-e'", 2, "'strong'", "'h9'")
 report("the last delivery's tier is written, and the role that claims it sees it", rows("SELECT tier||'/'||config_hash FROM tasks WHERE id='t-e';") == "strong/h9")
+report("escalation leaves earlier attempts as they were", "strong" not in rows("SELECT string_agg(tier||'/'||config_hash, ' ') FROM task_attempts WHERE task_id='t-e';"), rows("SELECT string_agg(tier||'/'||config_hash, ' ') FROM task_attempts WHERE task_id='t-e';"))
 ready("t-e")
 rows("UPDATE tasks SET tier='cheap' WHERE id='t-e';"); claim()
 fail("t-e", "w1", 3, "check_failed", check="'failed'"); end("t-e", 3, "check_failed", hidden="'abc'"); run("reaper_flip", "'t-e'", 3)

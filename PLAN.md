@@ -117,7 +117,7 @@ Sample the output yourself.
 | P1-19 | Static invariants + hash-stability tests | 1 d | **0.3 d** | DELEGATE |
 | P1-20 | Property tests on the predicate | 1 d | **0.4 d** | DELEGATE |
 | P1-21 | Contention tests | 0.5 d | 0.3 d | DELEGATE |
-| P1-22 | Replay tests, including `post_tool_call` output and attempt 2 (ADR-0012) | 0.5 d | 0.3 d | DELEGATE |
+| P1-22 | Replay tests, including `post_tool_call` output, attempt 2 (ADR-0012) and a provider failure (ADR-0014) | 0.5 d | 0.3 d | DELEGATE |
 | P1-23 | `EXPLAIN ANALYZE` at realistic size (R15) | 0.5 d | 0.4 d | PAIR |
 | **P1-24** | **`CachedModel` spike — the runtime's model interface, backed by `model_cache`** | — | **0.5 d** | **DRIVE** |
 | **Gate A** | The kill-test suite, passing | 2 d + | **2 d +** | **PAIR** |
@@ -160,6 +160,9 @@ Containers, bind mounts, git worktrees on the host with execution inside, databa
 where an agent produces confident code against an environment it cannot see, and where the loop of
 *try, fail, adjust* is slow regardless of who is driving. It is still the largest overrun risk in
 the project. Prototype the git-on-host / execute-in-container split before trusting the estimate.
+
+All host git goes through rule 150's runner from the first commit (ADR-0014), and R64's question about host gates
+reading card-written files gets answered here.
 
 ### Gate A does not compress
 

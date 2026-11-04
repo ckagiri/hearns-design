@@ -138,6 +138,9 @@ expect_error("a tool audit row needs an attempt row", "INSERT INTO tool_audit (t
 psql("INSERT INTO reviews (task_id,verb,reason) VALUES ('t-a','requeue','out of free retries');")
 report("claim leases the card and counts a delivery", do_claim() == "t-a:1")
 report("claim opens one task_attempts row", psql("SELECT count(*) FROM task_attempts WHERE task_id='t-a' AND n=1 AND ended_at IS NULL;")[1] == "1")
+report("the attempt records what the card was at claim", psql("SELECT kind||'/'||tier||'/'||config_hash FROM task_attempts WHERE task_id='t-a' AND n=1;")[1] == "execute/cheap/h")
+expect_error("a recorded provider failure needs a run", "INSERT INTO model_failures (key,failure_class,root_id) VALUES ('k','provider_refused','t-none');", "foreign key")
+expect_error("model_cache still refuses a row with no response", "INSERT INTO model_cache (key,response,root_id) VALUES ('k',NULL,'t-a');", "null value")
 stale = psql("WITH u AS (UPDATE tasks SET state='done' WHERE id='t-a' AND lease_holder='w1' AND attempts=0 RETURNING 1) SELECT count(*) FROM u;")[1]
 report("a stale fence commits nothing", stale == "0")
 report("a claimed card cannot be claimed twice", do_claim("w2") == "")
@@ -167,7 +170,7 @@ report("a quarantined descendant is acceptable", do_claim() == "t-q:1")
 
 # Budget and halt refuse in the claim.
 psql(task("t-b") + run.format("t-b", "1.00") + task("t-b.1", root="t-b", state="'leased'", attempts="1"))
-psql("INSERT INTO task_attempts (task_id,n,worker) VALUES ('t-b.1',1,'w');")
+psql("INSERT INTO task_attempts (task_id,n,worker,kind,tier,config_hash) VALUES ('t-b.1',1,'w','execute','cheap','h');")
 psql("UPDATE tasks SET state='leased', attempts=1 WHERE id='t-b.1';")
 psql("INSERT INTO model_calls (task_id,attempt,seq,model,cache_key,cost_usd) VALUES ('t-b.1',1,1,'m','k1',0.50);")
 psql("INSERT INTO model_calls (task_id,attempt,seq,model,cache_key,cost_usd,served_from_cache) VALUES ('t-b.1',1,2,'m','k2',0,true);")

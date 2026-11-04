@@ -62,6 +62,7 @@ expected to be short.
 | `adr/0011-what-a-workspace-or-provider-failure-costs-a-card.md` | Provisioning failures are free up to a ceiling, a failure no retry can fix halts the run, and worktrees are per attempt. Amends ADR-0007. |
 | `adr/0012-command-output-is-normalized-before-the-model-sees-it.md` | Anything a command produced is normalized before the model can see it. Replay re-executes tools. Narrows what the cache buys a retry. |
 | `adr/0013-what-a-card-must-show-to-reach-done.md` | The oracle decides `done`, and the database enforces it. Core's six states stand, a misclassified card becomes a `split` on its own row, and only evidence about the work changes what a retry sees. |
+| `adr/0014-what-the-host-trusts-and-what-the-record-keeps.md` | Host git ignores the worktree's `.git`, an attempt records what the card was, and replay reproduces provider failures. The container mask is untested, and nothing depends on it. |
 
 An ADR exists so a deletion keeps its argument. Without one, a removed section is just a gap that
 grows back.
