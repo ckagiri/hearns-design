@@ -106,6 +106,12 @@ up *with*, so replay degrades from a guarantee to a recording. Compaction makes 
 not one rendered prompt per card but N, chosen by logic we do not control, so there is not even a
 stable thing to key on. A proxy buys observation. It cannot buy determinism.
 
+*(Narrowed 2026-11-04.)* This describes an opaque runtime, and not every CLI harness is one. OpenCode at `93f30ca` can
+turn automatic compaction off, and a plugin hook sees each request before it is sent, so a key could probably be
+computed before dispatch, with a proxy serving the hits. That was read and not run. Rejecting such a harness rests
+on the other arguments here: its releases move the prompt (R60), its retries are on by default against `attempts`,
+and its tool sets are permission rules rather than an absent table key.
+
 The proxy technique is kept, repurposed — see the follow-on work below.
 
 **A prompt-compiling framework** (Flock, and DSPy beneath it). Rejected, and worth recording because

@@ -830,6 +830,16 @@ alignment — the primary hypothesis and the sole differentiator are now the sam
 removes the fallback. If the record turns out not to answer questions the baseline's cannot, there
 is no second thing this bought.
 
+**OpenCode comes close to the differentiator.** *(Added 2026-11-04. Source: `anomalyco/opencode` at
+`93f30ca`, read and not run; see `opencode-borrow-notes.md`.)* Core §13 asks for this to be said. Its
+record survives the process dying, and a boot sweep resumes unfinished sessions up to a counted limit.
+So "the record survives" no longer separates this design, and "there is no controller" has to carry
+the claim. OpenCode recovers by resuming a controller and telling it to continue, and its sweep assumes
+every orphaned claim's owner is dead, where attempts here are fenced. No equivalent of `intent_digest`
+or `config_hash` was found by keyword search, which is not proof of absence. It has run, and this has
+not. That leaves step 7's second question below. The DeepSeek note proposes narrowing this section to
+typed questions across runs, and that is still undecided.
+
 **Step 7 decides two questions separately:**
 
 1. Cost and wall clock against the baseline.
