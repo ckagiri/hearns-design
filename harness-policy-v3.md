@@ -356,8 +356,10 @@ attempt 3 → tier up + fresh-eyes framing       ← the current rule 68
 Rung 2 is the one that follows from §2.0.1: if turns are the expensive thing, buy fewer turns before
 buying a bigger model.
 
-These count **charged** attempts: `attempts` less the card's free rows (ADR-0011). An outage should not
-raise a card's effort or tier.
+Effort and layer 7 count **evidence** attempts only: those whose failure says something about the work (rule 147,
+ADR-0013). An outage, a dead worker, a stall or a parked outcome should not raise effort, and a retry after one keeps a
+byte-identical prompt. **The tier-up rung is positional:** the last delivery escalates whatever came before, because
+identical retries of a work-caused crash would otherwise repeat exactly. A free flip never escalates.
 
 **At the tier ceiling, escalation becomes a fresh-eyes framing in the retry context** — prior
 attempts' check output plus *two prior attempts; read their failures; you own this now*. Without
@@ -381,7 +383,7 @@ Depth here exists to serve the compounding-fidelity argument, and **the per-leve
 assumed, not observed, anywhere in this design.** So: ship flat.
 
 This costs nothing to un-cut, because recursion is a **behaviour**, not a structure — an executor
-that refuses and emits a `split` replacement deepens the tree with no code change. Depth arrives the
+that refuses and becomes a `split` (ADR-0013) deepens the tree with no new structure. Depth arrives the
 first time a card genuinely refuses.
 
 Consequences: `verify_at` becomes `[leaf, root]` rather than a ladder; the too-deep problem
@@ -501,9 +503,19 @@ The terminal outcomes:
 | `ok` | done as contracted |
 | `done_with_concerns` | done; self-flagged doubt or an out-of-scope observation |
 | `expanded` | decomposed rather than executed |
-| `misclassified` | wrongly typed or wrongly sized; emits a `split` replacement |
+| `misclassified` | wrongly typed or wrongly sized; the card becomes a `split` on the same row |
 | `needs_context` | correctly sized and typed; **missing facts** |
 | `spec_conflict` | the specification cannot work as described, or the contract mandates a defect |
+
+The sketch's `blocked` and `refused` are refusals too, and the harness assigns `exploration_cap` and `schema_violation`.
+Each lands in one state (ADR-0013):
+
+| Outcome | State |
+|---|---|
+| `ok`, `expanded`, `done_with_concerns` | `done`, if the oracle allows it (rule 145) |
+| `needs_context`, `spec_conflict`, `blocked`, `refused` | `awaiting_review` |
+| `misclassified` | back to `pending`, as a `split`. A `split` reporting it goes to `awaiting_review` |
+| `exploration_cap`, `schema_violation` | `failed` |
 
 `needs_context` and `done_with_concerns` are the two additions, and both earn their place cheaply.
 
@@ -774,7 +786,7 @@ Substrate modes are in core §10.
 | Mode | Tell | Response |
 |---|---|---|
 | Quiet scope creep | diff touches paths outside the declared set | commit-time hook, host-side |
-| Refusal loop | `misclassified` chains | bounded; quarantine at the cap |
+| Refusal loop | `misclassified` chains | none can form: a `split` reporting it goes to `awaiting_review` (ADR-0013) |
 | Verify loop | gaps producing gaps | `re_verify` round counter and breaker |
 | Echo | `decided` restates `open_questions` with no added specifics | structural: near-verbatim overlap detection |
 | **Detector false positive** | mismatch flagged on a question closed upstream by an approved revision | `closed_by` on `open_questions`; the metric reports **unresolved** mismatches only |

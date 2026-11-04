@@ -45,7 +45,7 @@ work. `$2` fences the flip, not the teardown.
    cause and clears it, or abandons the run. **Only an unambiguous provider signal counts**: an ambiguous
    body stays `provider_refused`, because a wrong halt stops everything.
 4. **A free failure is invisible to the card.** Layer 7 renders the last *charged* attempt, not the
-   last attempt. The card was not at fault, has nothing to learn, and its prompt stays byte-identical
+   last attempt. *(ADR-0013 narrows this to the last attempt with evidence about the work.)* The card was not at fault, has nothing to learn, and its prompt stays byte-identical
    so the replay cache still serves.
 5. **Escalation counts charged attempts** (policy §2.2, rule 68), which are `attempts` less the card's
    free rows. Otherwise an outage raises a card's effort and tier for nothing.

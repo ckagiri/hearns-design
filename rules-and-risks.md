@@ -173,7 +173,7 @@ deleted one.
 | 65 | A card never emits its own reviewer. Gates are pinned by the splitter. |
 | 66 | Patterned work — the same small edit across many sites — is one child enumerating every site. |
 | 67 | `decided` entries carry what, why, and what it costs if wrong. An entry with no `cost_if_wrong` is not a decision, it is a description. |
-| 68 | The final charged attempt (ADR-0011) escalates one tier. At the tier ceiling, which is the highest tier a role claims for that kind (ADR-0008), escalation becomes a fresh-eyes framing in layer 7. |
+| 68 | The last delivery escalates one tier, by position, unless the flip before it was free (ADR-0013). At the tier ceiling, which is the highest tier a role claims for that kind (ADR-0008), escalation becomes a fresh-eyes framing in layer 7. |
 | 69 | A verifier never widens its own scope. What it cannot verify it reports as `unverifiable`. |
 | 70 | Retrieval cites the risk that justified it, and the citation lands in the summary. |
 | 71 | A card's kind ratchets toward `split` and never away. A single-`execute`-child split is rejected. |
@@ -285,6 +285,11 @@ deleted one.
 | 142 | Provisioning failures and drain releases are free, up to `runs.max_free_retries`. A failure no retry can fix halts the run rather than spending attempts, and only an unambiguous provider signal counts. A card never sees a free failure, and escalation counts charged attempts only. |
 | 143 | One host for now. Kill and workspace teardown are host-local and the reaper runs from any worker. Several hosts need the host in `lease_holder` and teardown refused elsewhere. |
 | 144 | Anything a command produced is normalized before it can enter model-visible text: tool results, `post_tool_call` rung output and layer 7's check output. A normalizer removes only what differs between two correct runs, enters `kind_hash`, and what it removes stays in `tool_audit`. Promotes R-new-5, ADR-0012. |
+| 145 | A card reaches `done` only with a check that passed, or `not_applicable` for `expanded` or a kind with an empty ladder. A failed check is `failed`; one that could not start is free, then `awaiting_review`. The database enforces it with `done_means_checked`. ADR-0013. |
+| 146 | Core's six states stand. Refusals go to `awaiting_review`. A misclassified card becomes a `split` on its own row, and a misclassified `split` goes to `awaiting_review`. ADR-0013. |
+| 147 | Layer 7 and the effort rung read evidence attempts only: those whose failure says something about the work. A dead worker, a stall, a free failure and a parked outcome leave the next prompt byte-identical. Hidden rungs' output is never rendered. ADR-0013. |
+| 148 | The reaper revokes the lease before teardown, rechecking expiry, so a late commit's fence fails and a live worker keeps its card. ADR-0013. |
+| 149 | A failed `retry_safe: false` card goes to `awaiting_review`, on any failure but `provision_failed`, with its worktree and database kept until a verb acts. ADR-0013. |
 
 ---
 
@@ -371,6 +376,7 @@ deleted one.
 | R60 | **The card runtime assembles the prompt, so its version is part of what a card saw.** A library upgrade changes the system it ran under with nothing in the design moving. | Runtime pinned in the lockfile and inside `config_hash`; an upgrade is a run boundary. ADR-0004, policy §1.6. |
 | R61 | **Context exhaustion inside a card produces a confident summary.** The lease bounds time and the deadline bounds the attempt; neither bounds the window. A card that runs out of context and then reports success is indistinguishable from one that succeeded. | **None.** Recorded per rule 62 as a residual. This is ADR-0001's commission case arriving by a route the pair cannot see, and diff-reading verify (E2 arm D) is the only proposed mechanism that would catch it. |
 | R62 | **A normalizer removes something the card needed.** A card chasing a slow query sees no timing, and nothing tells it that it is missing. | The over-stripping test in core §11; `raw_ref` for diagnosis. Timing a contract needs should be a check's result rather than a log line. ADR-0012. |
+| R63 | **A broken oracle looks like bad luck.** Every card spends its free retries on `check_unavailable` and then waits for a person, with nothing halting the run. Safe, because nothing reaches `done`, but slow and costly to notice. | The query in `queries/lessons.sql`. ADR-0011's circuit breaker if it recurs. ADR-0013. |
 
 ---
 
@@ -447,6 +453,10 @@ exist.
 9. Does per-model ACL splitting break module update, uninstall, or OCA tooling?
 10. Snapshot maintenance cost for migration cards.
 11. Multi-company. Out of scope; arriving later is a re-split, not an amendment.
+12. **`spec_revision` has no role, so no tier or `config_hash`,** yet both are `NOT NULL` and it is written with `state='awaiting_review'`. Does a human-written card get a nominal tier, or do the columns relax?
+13. **What are the pin's keys?** Core §9.4 reads `config_pin->>'model_strong'`, the sketch reads `pin.kind_hash[(kind, tier)]`, and the catalog run's pin has neither shape.
+14. **What shape are `open_questions` and `decided` entries?** Core's `closed_by` needs objects, the Odoo run stores strings, and the catalog run's set difference needs `q["id"]` and `d["addresses"]`.
+15. **Where does `unverifiable` go?** Policy and the Odoo adaptation route it to notes, but core §4.5 allows only human promotion.
 
 ---
 
@@ -478,6 +488,7 @@ have never been observed** — and rules 121 and 132 are the model for what to d
 Append-only. One line per change. Date, ADR where one exists, what moved.
 
 ```
+2026-11-04  ADR-0013  what reaches done and what a retry learns: oracle decides, six states stand, misclassified rewrites in place, evidence attempts, revoke before teardown; rule 68 amended; rules 145–149; R63
 2026-11-04  ADR-0012  command output normalized before the model sees it; replay re-executes tools; core §8's retry claim narrowed; rule 144; R62; R-new-5 promoted
 2026-11-04  —         001_initial.sql reconstructed from the documents, the original having been lost; harness/ledger/sql and queries drafted
 2026-11-04  —         core §9.3 corrected: the tree query sorted t-x.10 before t-x.2; now COLLATE tree_order

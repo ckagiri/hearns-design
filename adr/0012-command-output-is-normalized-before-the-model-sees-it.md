@@ -63,7 +63,7 @@ its retry misses too. Only replay and free retries can hit.
    |---|---|---|
    | Replay | unchanged | every call hits; a miss raises |
    | Free retry (ADR-0011) | unchanged | calls hit up to where the failed attempt stopped |
-   | Charged retry, including a dead worker | moved by effort or model, and layer 7 | none hit |
+   | Charged retry, including a dead worker *(ADR-0013 separates these: a dead worker's retry now hits)* | moved by effort or model, and layer 7 | none hit |
    | Reset-from-a-point (§8.2) | unchanged upstream | upstream hits; the raised subtree does not |
 
    "Checkpointing is mostly solved by accident" is deleted. It is true of free retries alone.

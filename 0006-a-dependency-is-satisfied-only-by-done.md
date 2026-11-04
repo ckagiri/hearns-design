@@ -35,7 +35,8 @@ SATISFIES_DEP = {"done"}   # not every terminal state
 satisfy a dependency. Children of such a parent remain `pending` and unclaimable until the parent
 is resolved.
 
-`misclassified` does not arise here: it routes to `needs_review`, which is not terminal.
+`misclassified` does not arise here: it routes to `needs_review`, which is not terminal. *(Amended by ADR-0013: the
+card becomes a `split` on its own row, and `needs_review` is `awaiting_review`.)*
 
 **A transitive-stall query ships with this**, because the decision is only safe if the stall is
 visible:

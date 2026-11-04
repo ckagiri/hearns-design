@@ -27,7 +27,7 @@ CREATE TYPE task_state AS ENUM (
   'quarantined'       -- terminal; scrap pile
 );
 
--- [core §4.1], plus the three columns marked below.
+-- [core §4.1]
 CREATE TABLE tasks (
   id                text PRIMARY KEY,          -- 't-a3f8', 't-a3f8.2.7', 't-a3f8.V'
   root_id           text NOT NULL,
@@ -40,7 +40,7 @@ CREATE TABLE tasks (
   intent            jsonb NOT NULL,            -- refs + params. NOT a context blob.
   title             text NOT NULL,             -- one line, for a human reading the tree
   contract          text NOT NULL,
-  contract_completeness text,                  -- [inferred] core §9.4's first lessons query reads it
+  contract_completeness text,                  -- declared at emit; sets tier and effort (policy §2.1)
   check_spec        jsonb,                     -- {rungs:[...], expect: PASS|FAIL}
   touch_set         text[] NOT NULL DEFAULT '{}',
   owns              jsonb,                     -- namespace ownership; domain-specific
@@ -67,7 +67,7 @@ CREATE TABLE tasks (
   tokens_out        bigint NOT NULL DEFAULT 0,
   cost_usd          numeric(12,6) NOT NULL DEFAULT 0,
   check_latency_ms  bigint NOT NULL DEFAULT 0,
-  rung1_invocations int NOT NULL DEFAULT 0,    -- [spec] odoo-adaptation §R28: per card from run one
+  rung1_invocations int  NOT NULL DEFAULT 0,   -- R36: per card from run one
 
   result_ref        text,
   result_summary    jsonb,
@@ -75,7 +75,7 @@ CREATE TABLE tasks (
   summary_schema_version int NOT NULL DEFAULT 1,   -- NOT retrofittable
   outcome           text,
   failure_class     text,
-  check_result      text                       -- [inferred] jig-sketch.py commit() writes it
+  check_result      text                       -- the oracle's verdict (ADR-0013)
     CHECK (check_result IN ('passed', 'failed', 'unavailable', 'not_applicable')),
 
   base_sha          text,
@@ -88,7 +88,9 @@ CREATE TABLE tasks (
   created_at        timestamptz NOT NULL DEFAULT now(),
   updated_at        timestamptz NOT NULL DEFAULT now(),
 
-  CONSTRAINT intent_size CHECK (pg_column_size(intent) < 4096)
+  CONSTRAINT intent_size CHECK (pg_column_size(intent) < 4096),
+  CONSTRAINT done_means_checked CHECK (state <> 'done'
+    OR COALESCE(check_result IN ('passed', 'not_applicable'), false))   -- rule 145
 );
 
 CREATE INDEX tasks_claim_idx    ON tasks (kind, tier, priority DESC, created_at)
@@ -105,8 +107,10 @@ CREATE TABLE task_attempts (
   task_id       text NOT NULL REFERENCES tasks(id),
   n             int  NOT NULL,     -- tasks.attempts at claim; the fence
   worker        text NOT NULL,
-  failure_class text,              -- NULL while open and on success
-  check_ref     text,              -- content hash; what retry layer 7 reads
+  failure_class text,              -- NULL while open and on success; a parked attempt's outcome
+  check_ref     text,              -- content hash; what retry layer 7 reads. Visible rungs only
+  hidden_check_ref text,           -- content hash; hidden rungs. Never rendered (ADR-0013)
+  refusal       jsonb,             -- the payload of a parked or misclassified attempt
   diff_ref      text,              -- content hash; NULL if the worker died first
   started_at    timestamptz NOT NULL DEFAULT now(),
   ended_at      timestamptz,

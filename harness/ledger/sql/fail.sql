@@ -3,5 +3,5 @@
 UPDATE tasks
    SET state='failed', failure_class=$4,
        max_attempts = max_attempts + CASE WHEN $5::boolean THEN 1 ELSE 0 END,
-       updated_at=now()
+       outcome=$6, check_result=$7, updated_at=now()
  WHERE id=$1 AND lease_holder=$2 AND attempts=$3 AND state='leased';

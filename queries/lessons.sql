@@ -3,17 +3,19 @@
 -- answers. Run with: psql -v p="'project'" -v d="'digest'" -v h="'hash'" -f queries/lessons.sql
 
 -- which contract shapes produce refusals
-select contract_completeness, outcome, count(*)
-from tasks where kind='execute' and project=:p group by 1,2;
+select t.contract_completeness, a.failure_class, count(*)
+from task_attempts a join tasks t on t.id=a.task_id
+where t.kind='execute' and t.project=:p and a.failure_class is not null group by 1,2;
 
 -- what facts were missing, per root intent
-select r.intent_digest, t.result_summary->'needs'
-from tasks t join runs r on r.root_id=t.root_id
-where t.outcome='needs_context' and r.project=:p;
+select r.intent_digest, a.refusal->'needs'
+from task_attempts a join tasks t on t.id=a.task_id join runs r on r.root_id=t.root_id
+where a.failure_class='needs_context' and r.project=:p;
 
 -- same intent, different model version
 select r.config_pin->>'model_strong' as model,
-       count(*) filter (where t.outcome='misclassified'),
+       sum((select count(*) from task_attempts a
+             where a.task_id=t.id and a.failure_class='misclassified')) as misclassified,
        avg(t.attempts)
 from runs r join tasks t on t.root_id=r.root_id
 where r.intent_digest=:d group by 1;
@@ -50,6 +52,10 @@ select t.id, count(distinct (m.attempt, m.seq)) as turns, t.rung1_invocations,
 from tasks t left join model_calls m on m.task_id = t.id
 where t.project = :p group by t.id, t.rung1_invocations;
 
+-- cards waiting because an oracle could not start: climbing across unrelated cards means it is broken (R63)
+select t.kind, count(*) from tasks t
+where t.project = :p and t.state = 'awaiting_review' and t.outcome = 'check_unavailable' group by 1;
+
 -- reap count, by class (core §9.2)
 select a.failure_class, count(*)
 from task_attempts a join tasks t on t.id = a.task_id
@@ -64,10 +70,11 @@ where t.project = :p and a.failure_class = 'stalled';
 select t.id, t.failure_class, count(*) as attempts
 from tasks t join task_attempts a on a.task_id = t.id
 where t.project = :p and t.state = 'quarantined'
-  and t.failure_class in ('rate_limited', 'overloaded', 'timeout', 'provision_failed', 'released')
+  and t.failure_class in ('rate_limited', 'overloaded', 'timeout', 'provision_failed', 'released',
+                          'check_unavailable')
 group by 1,2;
 
--- cards committed with a non-passed oracle, by kind (jig-sketch.py, note 3)
+-- cards committed with no check that ran, by kind (jig-sketch.py, note 3). Rule 145 leaves only not_applicable
 select kind, check_result, count(*) from tasks
 where project = :p and state = 'done' and check_result is distinct from 'passed' group by 1,2;
 

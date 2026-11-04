@@ -159,6 +159,7 @@ CREATE TABLE tasks (
   intent            jsonb NOT NULL,            -- refs + params. NOT a context blob.
   title             text NOT NULL,             -- one line, for a human reading the tree
   contract          text NOT NULL,
+  contract_completeness text,                  -- declared at emit; sets tier and effort (policy §2.1)
   check_spec        jsonb,                     -- {rungs:[...], expect: PASS|FAIL}
   touch_set         text[] NOT NULL DEFAULT '{}',
   owns              jsonb,                     -- namespace ownership; domain-specific
@@ -185,6 +186,7 @@ CREATE TABLE tasks (
   tokens_out        bigint NOT NULL DEFAULT 0,
   cost_usd          numeric(12,6) NOT NULL DEFAULT 0,
   check_latency_ms  bigint NOT NULL DEFAULT 0,
+  rung1_invocations int  NOT NULL DEFAULT 0,   -- R36: per card from run one
 
   result_ref        text,
   result_summary    jsonb,
@@ -192,6 +194,8 @@ CREATE TABLE tasks (
   summary_schema_version int NOT NULL DEFAULT 1,   -- NOT retrofittable
   outcome           text,
   failure_class     text,
+  check_result      text                       -- the oracle's verdict (ADR-0013)
+    CHECK (check_result IN ('passed', 'failed', 'unavailable', 'not_applicable')),
 
   base_sha          text,
   result_sha        text,
@@ -203,7 +207,9 @@ CREATE TABLE tasks (
   created_at        timestamptz NOT NULL DEFAULT now(),
   updated_at        timestamptz NOT NULL DEFAULT now(),
 
-  CONSTRAINT intent_size CHECK (pg_column_size(intent) < 4096)
+  CONSTRAINT intent_size CHECK (pg_column_size(intent) < 4096),
+  CONSTRAINT done_means_checked CHECK (state <> 'done'
+    OR COALESCE(check_result IN ('passed', 'not_applicable'), false))   -- rule 145
 );
 
 CREATE INDEX tasks_claim_idx    ON tasks (kind, tier, priority DESC, created_at)
@@ -238,6 +244,7 @@ CREATE INDEX tasks_deadline_idx ON tasks (deadline_at)
   *has this taken too long overall?* and spans every attempt.
 - **`attempts` is the fencing token.** Monotonic per lease. Not optional — see §5.5.
 - **`failure_class` is the current attempt's.** Claim clears it; `task_attempts` keeps the history.
+  So does `outcome`'s: a later commit overwrites the card's, so the lessons queries read attempts (ADR-0013).
 - **`outcome` disambiguates `done`.** The predicate does not consult it; §5.2 handles that
   structurally. The value set is policy-owned.
 - **`summary_schema_version`** is written by the jig's output validator, never by a model. A schema
@@ -253,8 +260,10 @@ CREATE TABLE task_attempts (
   task_id       text NOT NULL REFERENCES tasks(id),
   n             int  NOT NULL,     -- tasks.attempts at claim; the fence
   worker        text NOT NULL,
-  failure_class text,              -- NULL while open and on success
-  check_ref     text,              -- content hash; what retry layer 7 reads
+  failure_class text,              -- NULL while open and on success; a parked attempt's outcome
+  check_ref     text,              -- content hash; what retry layer 7 reads. Visible rungs only
+  hidden_check_ref text,           -- content hash; hidden rungs. Never rendered (ADR-0013)
+  refusal       jsonb,             -- the payload of a parked or misclassified attempt
   diff_ref      text,              -- content hash; NULL if the worker died first
   started_at    timestamptz NOT NULL DEFAULT now(),
   ended_at      timestamptz,
@@ -467,7 +476,10 @@ SELECT id, attempts FROM tasks
 
 -- per candidate, after its teardown has run
 UPDATE tasks
-   SET state = (CASE WHEN attempts >= max_attempts THEN 'quarantined' ELSE 'pending' END)::task_state,
+   SET state = (CASE WHEN NOT retry_safe AND failure_class IS DISTINCT FROM 'provision_failed'
+                          THEN 'awaiting_review'
+                     WHEN attempts >= max_attempts THEN 'quarantined'
+                     ELSE 'pending' END)::task_state,
        not_before = now() + LEAST(interval '10 seconds' * power(2, attempts - 1),
                                   interval '5 minutes'),
        lease_holder = NULL, lease_expires_at = NULL,
@@ -498,6 +510,7 @@ install, and an immediate one against an outage spends all of a card's attempts 
 **Amended: the reaper kills before it requeues.** Order matters:
 
 ```
+0. revoke the lease              (recheck expiry; none lost means a live worker keeps its card)
 1. kill the container            (named from the card id and attempt, §6)
 2. drop the workspace database
 3. remove the attempt's worktree
@@ -509,6 +522,17 @@ first and a live process keeps writing beside its own retry. This closes a failu
 resolve. §6 states what a failure at each step does. `$2` keeps a flip from landing on a newer claim,
 and the state check keeps it from landing on a commit that won the race. Teardown cannot land on a newer
 claim either, because every name it touches carries the attempt it selected (ADR-0011).
+
+**Revoke first** (rule 148, ADR-0013). Clearing `lease_holder` makes a late commit's fence fail, so a worker that
+wakes during teardown cannot commit `done` onto a branch already removed. A `failed` candidate needs no revoke,
+because commit requires `state='leased'`. The row stays `leased`, so nothing claims it mid-teardown.
+
+**A `retry_safe: false` card goes to `awaiting_review`, and its evidence stays** (rule 149). The container is
+killed. The worktree and database are kept until a verb acts, and the sweep spares them. `provision_failed` is
+exempt, because no work ran.
+
+**Tier is written here.** When the next delivery is the last, and this flip was not free, `escalate_tier.sql` sets
+`tier` and `config_hash` in the flip's transaction (rule 68).
 
 **Orphans are swept by name** (rule 141). The candidates above miss a container left by a crash after
 commit, since the row is `done`, and one left by the deadline flip, which runs no teardown. So each pass
@@ -585,16 +609,20 @@ and §5.4's kill-first ordering is what makes it safe.
 BEGIN;
   UPDATE tasks SET state='done', result_ref=…, result_summary=…, outcome=…,
                    tokens_in=…, tokens_out=…, cost_usd=…, model_used=…,
-                   check_latency_ms=…, updated_at=now()
-   WHERE id=$1 AND lease_holder=$2 AND attempts=$3;         -- fenced
+                   check_latency_ms=…, check_result=…, updated_at=now()
+   WHERE id=$1 AND lease_holder=$2 AND attempts=$3 AND state='leased';   -- fenced
   UPDATE task_attempts SET ended_at=now(), check_ref=…, diff_ref=…
    WHERE task_id=$1 AND n=$3;
   INSERT INTO tasks (…) VALUES … ON CONFLICT (id) DO NOTHING;   -- idempotent append
 COMMIT;
 ```
 
-Every path that ends an attempt closes its row in that path's transaction: commit, failure, reap, and
+Every path that ends an attempt closes its row in that path's transaction: commit, failure, parking, reap, and
 drain's early release (as `released`).
+
+**Commit only reaches `done`** (rule 145). `state='leased'` stops a late commit flipping `failed` to `done`, and
+`done_means_checked` refuses a row whose oracle did not pass. Refusals go through `park.sql`, and a failed check
+through `fail.sql`. `not_applicable` is allowed only for `expanded`, or a kind with an empty ladder.
 
 **Commit is a harness operation, not a card operation.** The card returns; the harness runs the
 `pre_commit` hooks and writes. This is what makes the structural gates unreachable from inside the
@@ -649,7 +677,8 @@ property retries already rely on.
 > **A card whose side effects cannot be undone by destroying its workspace must not exist.**
 
 Where that cannot hold — migrations against real data, external side effects — the card carries
-`retry_safe: false` and a failure routes to `awaiting_review` rather than back to `pending`.
+`retry_safe: false` and a failure routes to `awaiting_review` rather than back to `pending` (§5.4). It is set at
+emission, and the `pre_commit` hook sets it when the diff touches migrations.
 
 **Shared expensive setup is built once and cloned.** Whatever the check environment is, build a
 template at run start and clone per attempt. Without this, parallel workers serialise on
@@ -690,9 +719,13 @@ State `awaiting_review`. Five verbs:
 |---|---|
 | `approve` | card proceeds |
 | `edit` | contract or check amended, then proceeds |
-| `split` | replaced by a `split` card carrying the same intent |
+| `split` | becomes a `split` on the same row, carrying the same intent (ADR-0013) |
 | `kill` | quarantined |
 | `promote` | an observation becomes a note (§4.5) |
+
+**A verb that returns a card to `pending` cannot strand it.** `review_return.sql` sets `max_attempts` to at least
+`attempts + 3`, never lowers `attempts`, and sets a new deadline, because time in review can otherwise expire the
+card on return. The new deadline is recorded in `reviews`.
 
 **The interface shows the emitting card's `cost_if_wrong` where one exists.** Approval before
 consequence, not after. A gate presenting three options and no costs produces fast approvals, and
@@ -726,7 +759,8 @@ and corrupts nothing.
 |---|---|---|
 | Replay | unchanged | every call hits; a miss raises |
 | Free retry (ADR-0011) | unchanged | calls hit up to where the failed attempt stopped |
-| Charged retry, including a dead worker | moved by effort or model, and layer 7 | none hit |
+| Charged retry after evidence: a failed check, malformed output, a turn limit | moved by effort or model, and layer 7 | none hit |
+| Retry after a dead worker or a stall (ADR-0013) | unchanged, unless it is the last delivery | calls hit up to where the attempt stopped |
 | Reset-from-a-point (§8.2) | unchanged upstream | upstream hits; the raised subtree does not |
 
 A hit writes a `model_calls` row at zero cost, so these rates are a query.
@@ -938,17 +972,19 @@ nobody can write a query against is a field to remove.
 
 ```sql
 -- which contract shapes produce refusals
-select contract_completeness, outcome, count(*)
-from tasks where kind='execute' and project=:p group by 1,2;
+select t.contract_completeness, a.failure_class, count(*)
+from task_attempts a join tasks t on t.id=a.task_id
+where t.kind='execute' and t.project=:p and a.failure_class is not null group by 1,2;
 
 -- what facts were missing, per root intent
-select r.intent_digest, t.result_summary->'needs'
-from tasks t join runs r on r.root_id=t.root_id
-where t.outcome='needs_context' and r.project=:p;
+select r.intent_digest, a.refusal->'needs'
+from task_attempts a join tasks t on t.id=a.task_id join runs r on r.root_id=t.root_id
+where a.failure_class='needs_context' and r.project=:p;
 
 -- same intent, different model version
 select r.config_pin->>'model_strong' as model,
-       count(*) filter (where t.outcome='misclassified'),
+       sum((select count(*) from task_attempts a
+             where a.task_id=t.id and a.failure_class='misclassified')) as misclassified,
        avg(t.attempts)
 from runs r join tasks t on t.root_id=r.root_id
 where r.intent_digest=:d group by 1;
@@ -966,6 +1002,8 @@ Only those the substrate itself must handle. Policy-level modes live in `harness
 | **Zombie writer** | stale worker resumes after reclaim | fencing rejects the commit; the container kill prevents the writes |
 | Crash-looping card | `attempts` climbs with no explicit failure | `attempts` counts deliveries, so `max_attempts` bounds it |
 | Infrastructure failure consuming an attempt | `failure_class` names it | narrow allow-list raises `max_attempts` by one; `attempts` is the fence and never falls. Backoff still applies. Past `runs.max_free_retries` the failure is charged (ADR-0011) |
+| Oracle cannot start | `check_unavailable` climbing across unrelated cards | free retries with backoff, then `awaiting_review`. Nothing halts the run (R63) |
+| Late commit during teardown | none: it cannot land | `reaper_revoke.sql` clears the holder, so the fence fails (rule 148) |
 | Silent loop | `last_progress_at + stall_after < now()` | reaper: as worker death, recorded `stalled` |
 | Stall clause killing live work | `stalled` attempts that succeed on retry with no config change | raise `stall_after`; ADR-0007 sets the threshold for deleting the clause |
 | Blocked teardown | leased past expiry, or `failed`, and not clearing; kill errors in the reaper log | none automatic: a person looks. The next pass retries |
@@ -1009,7 +1047,11 @@ good**. This section is only the first.
   attempt number give identical bytes. Odoo's test uses a captured real log. A failing fixture's
   normalized output still contains its failure text and exit status.
 - **Free-retry hit tests** — fail a card with a free class after turn *k*; the retry serves *k* calls
-  from cache.
+  from cache. Do the same after `SIGKILL`: the prompt is byte-identical unless it is the last delivery.
+- **Oracle tests** — a failed or unavailable check never reaches `done`, including `done_with_concerns` and a
+  direct `UPDATE`. A hidden rung's output never appears in the next attempt's rendered prompt.
+- **Late-commit tests** — pause a worker past its lease, reap it, wake it: its commit changes nothing and its
+  card's branch is gone. Heartbeat between selection and revoke: the card is not reaped.
 
 ### 11.1 Gate A
 

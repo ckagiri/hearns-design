@@ -42,7 +42,10 @@ from jcs import canonicalize as canonical_bytes    # RFC 8785. pinned.
 
 class Outcome(StrEnum):
     OK               = "ok"           # terminal, work landed
+    DONE_WITH_CONCERNS = "done_with_concerns"  # landed, with self-flagged doubt (§P4.1)
     EXPANDED         = "expanded"     # terminal, children emitted
+    NEEDS_CONTEXT    = "needs_context"  # right shape, missing facts
+    SPEC_CONFLICT    = "spec_conflict"  # the specification cannot work as described
     BLOCKED          = "blocked"      # needs something outside ownership
     MISCLASSIFIED    = "misclassified"  # the CARD was the wrong shape
     EXPLORATION_CAP  = "exploration_cap"  # we ran out of turns. NOT the same thing.
@@ -59,11 +62,14 @@ class FailureClass(StrEnum):
     OVERLOADED         = "overloaded"          #  │ free retry
     TIMEOUT            = "timeout"             #  │
     PROVISION_FAILED   = "provision_failed"    #  │ ADR-0011
+    CHECK_UNAVAILABLE  = "check_unavailable"   #  │ ADR-0013: a rung could not start
     RELEASED           = "released"            # ─┘ drain's early release
     AUTH_REJECTED      = "auth_rejected"       # ─┐
     BILLING_EXHAUSTED  = "billing_exhausted"   #  │ halts the run. unambiguous signals only
     MODEL_UNAVAILABLE  = "model_unavailable"   # ─┘
-    STALLED            = "stalled"             # ─┐ ADR-0007
+    LEASE_EXPIRED      = "lease_expired"       # ─┐ set by the reaper. charged, not evidence
+    STALLED            = "stalled"             # ─┘ ADR-0007
+    CHECK_FAILED       = "check_failed"        # ─┐ ADR-0013
     CONTEXT_EXCEEDED   = "context_exceeded"    #  │
     PROVIDER_REFUSED   = "provider_refused"    #  │ consumes an attempt
     MALFORMED_OUTPUT   = "malformed_output"    #  │
@@ -71,7 +77,13 @@ class FailureClass(StrEnum):
     HARNESS_BUG        = "harness_bug"         # quarantine, do not retry
 
 FREE_RETRY = {FailureClass.RATE_LIMITED, FailureClass.OVERLOADED, FailureClass.TIMEOUT,
-              FailureClass.PROVISION_FAILED, FailureClass.RELEASED}
+              FailureClass.PROVISION_FAILED, FailureClass.CHECK_UNAVAILABLE,
+              FailureClass.RELEASED}
+# Rule 147: what layer 7 and the effort rung may learn from. Everything else, a dead
+# worker included, leaves the next prompt byte-identical so the cache still serves.
+EVIDENCE   = {FailureClass.CHECK_FAILED, FailureClass.CONTEXT_EXCEEDED,
+              FailureClass.PROVIDER_REFUSED, FailureClass.MALFORMED_OUTPUT,
+              FailureClass.TURN_LIMIT}
 HALTS_RUN  = {FailureClass.AUTH_REJECTED, FailureClass.BILLING_EXHAUSTED,
               FailureClass.MODEL_UNAVAILABLE}
 
@@ -370,7 +382,8 @@ def render_retry_layer(last) -> str:
     THE PREVIOUS ATTEMPT FAILED. Read this before editing anything.
     failure_class: {last.failure_class}
     checks:
-    {truncate(normalize_check_log(last.check_output), N)}
+    {"A hidden check failed; output withheld." if last.hidden_failed
+     else truncate(normalize_check_log(last.check_output), N)}
     """                                  # rule 144: a replayed check writes a new log
 
 
@@ -531,21 +544,23 @@ def run_jig(role, task, attempt) -> JigResult:
     deps = ledger.dependency_summaries(task)          # summaries, not bodies
     blocks = render(role, task, deps,
                     orientation=run_orientation(task.root_id),
-                    # CHARGED, not latest. A free failure was not the card's doing, and
-                    # telling it would also move the bytes the replay cache keys on.
-                    last_attempt=ledger.last_charged_attempt(task))
+                    # EVIDENCE, not latest (rule 147). A free failure or a dead worker says
+                    # nothing about the work, and telling the card would also move the
+                    # bytes the replay cache keys on.
+                    last_attempt=ledger.last_evidence_attempt(task))
 
     prompt_ref = content.put(join_for_audit(blocks))  # store what the model SAW
     req = Request(blocks=blocks, tools=[TOOLS[n].schema for n in j.tools],
-                  model=role.model, effort=role.effort, settings=role.provider_settings)
+                  model=role.model, effort=effort_for(role, ledger.count_evidence_attempts(task)),
+                  settings=role.provider_settings)
 
     result = _turn_loop(role, task, attempt, req, prompt_ref)
-    if result.outcome is not Outcome.OK and result.outcome is not Outcome.EXPANDED:
+    if TERMINAL_STATE[result.outcome] != "done":
         return result                                  # refusals skip the oracle
 
     # The oracle. Fresh container, spec mounted from a ref the working
     # container never had. FOUR states, never two.
-    return replace(result, check=run_oracle(task))
+    return replace(result, check=run_oracle(task, result.outcome))
 
 
 def _turn_loop(role, task, attempt, req, prompt_ref) -> JigResult:
@@ -553,11 +568,13 @@ def _turn_loop(role, task, attempt, req, prompt_ref) -> JigResult:
 
     for turn in range(j.max_turns):
         resp = model.complete(replace(req, blocks=req.blocks + as_blocks(messages)))
+        ledger.stamp_progress(task)                    # ADR-0007. never from the heartbeat
 
         if resp.tool_calls:
             messages.append(resp.as_assistant())
             for c in resp.tool_calls:
                 messages.append(tool_result(c, dispatch_tool(task, attempt, role, c)))
+                ledger.stamp_progress(task)
             continue
 
         payload = parse(resp.text, j.schema)
@@ -646,22 +663,30 @@ def rungs_for(task, trigger) -> list[Rung]:
             if r.trigger == trigger and (r.always or r.rung in chosen)]
 
 
-def run_oracle(task) -> CheckResult:
+def run_oracle(task, outcome) -> CheckResult:
     """Best-effort. A check that can crash a card is worse than no check.
        Stops at the first failure, so a card that fails rung 0 never gets a
        database. expect: FAIL inverts the test rung on a test card; elided."""
     rungs = rungs_for(task, "pre_commit")
     if not rungs:
-        return CheckResult("not_applicable")
+        # Rule 145. A check_spec selecting nothing on a kind with a ladder is no pass.
+        allowed = outcome is Outcome.EXPANDED or not LADDER.get(task.kind)
+        return CheckResult("not_applicable" if allowed else "unavailable")
     box = Lazy(fresh)                        # one container, started only if a rung needs it
-    try:
-        for rung in rungs:
+    for rung in rungs:
+        ledger.stamp_progress(task)          # a long ladder is not silence (ADR-0013)
+        try:
             where = None if rung.spec["where"] == "host" else box.get()
+        except SpawnFailure:
+            return CheckResult("unavailable")    # NOT 'passed'. See note 2.
+        try:
             r = CHECKS[rung.type].run(rung, task, hidden=not rung.visible, container=where)
-            if not r.ok:
-                return CheckResult("failed", detail=truncate(r.detail, N))
-    except (SpawnFailure, Timeout, BrokenPipe):
-        return CheckResult("unavailable")    # NOT 'passed'. See note 2.
+        except (Timeout, BrokenPipe) as e:
+            # It started, so the card's own code may have hung it. Free retries would
+            # replay the same diff from cache about twelve times.
+            return CheckResult("failed", detail=str(e), hidden=not rung.visible)
+        if not r.ok:
+            return CheckResult("failed", detail=truncate(r.detail, N), hidden=not rung.visible)
     return CheckResult("passed")
 
 
@@ -699,9 +724,10 @@ def shape_children(role, task, payload, spec, emitted) -> list[NewTask]:
     kids = [
         NewTask(
             id=child_id(parent, c),        # 't-' + hash(root_id, kind, normalized intent)
-            root_id=task.root_id, parent_id=parent, caused_by=task.id,
-            kind=c["kind"], tier=tier_for(c), intent=c["intent"],
-            contract=c["contract"], check_spec=c["check_spec"],
+            root_id=task.root_id, project=task.project, parent_id=parent, caused_by=task.id,
+            kind=c["kind"], tier=tier_for(c), intent=c["intent"], title=c["title"],
+            contract=c["contract"], contract_completeness=c["contract_completeness"],
+            check_spec=c["check_spec"], retry_safe=c.get("retry_safe", True),
             touch_set=c["touch_set"], open_questions=c.get("open_questions", []),
             deps=[resolve(d, parent) for d in c.get("deps", [])],
             state="awaiting_review" if gated(role, parent) else "pending",
@@ -717,6 +743,8 @@ def shape_children(role, task, payload, spec, emitted) -> list[NewTask]:
         raise SplitRejected("fan_out", len(kids))
     if not all(k.check_spec for k in kids):
         raise SplitRejected("missing_check_spec")      # crude, never false-rejects
+    if any(LADDER.get(k.kind) and not narrowed_rungs(k) for k in kids):
+        raise SplitRejected("check_spec_selects_nothing")  # rule 145
     reject_if_touch_sets_collide(kids)     # false independence
     reject_if_edge_carries_nothing(kids)   # false dependence
     return kids
@@ -769,30 +797,50 @@ def reject_if_touch_sets_collide(kids):
 # ══════════════════════════════════════════════════════════════════════
 
 TERMINAL_STATE = {
-    Outcome.OK: "done", Outcome.EXPANDED: "done",
-    Outcome.BLOCKED: "blocked", Outcome.MISCLASSIFIED: "needs_review",
+    # Core's six states stand (ADR-0013). `done` still needs the oracle: see land().
+    Outcome.OK: "done", Outcome.DONE_WITH_CONCERNS: "done", Outcome.EXPANDED: "done",
+    Outcome.NEEDS_CONTEXT: "awaiting_review", Outcome.SPEC_CONFLICT: "awaiting_review",
+    Outcome.BLOCKED: "awaiting_review", Outcome.REFUSED: "awaiting_review",
+    Outcome.MISCLASSIFIED: "pending",       # as a split, on the same row
     Outcome.EXPLORATION_CAP: "failed", Outcome.SCHEMA_VIOLATION: "failed",
-    Outcome.REFUSED: "refused",
 }
 
 
+def land(role, task, attempt, result: JigResult, new_tasks):
+    """Rule 145: the oracle decides, and done_means_checked enforces it."""
+    state = TERMINAL_STATE[result.outcome]
+    if result.outcome is Outcome.MISCLASSIFIED and task.kind != "split":
+        ledger.rekind_split(task, attempt, result)     # clause (a) holds dependents
+    elif state == "awaiting_review" or result.outcome is Outcome.MISCLASSIFIED:
+        ledger.park(task, attempt, result)             # a split cannot chain
+    elif state == "failed":
+        ledger.fail(task, attempt, result.failure_class, consume=True)
+    elif result.check.state == "failed":
+        ledger.fail(task, attempt, FailureClass.CHECK_FAILED, consume=True, check=result.check)
+    elif result.check.state == "unavailable":
+        if ledger.free_retries_left(task):
+            raise HarnessFailure(FailureClass.CHECK_UNAVAILABLE)
+        ledger.park(task, attempt, result, outcome="check_unavailable")   # never quarantine
+    else:
+        commit(task, attempt, result, new_tasks)
+
+
 def commit(task, attempt, result: JigResult, new_tasks):
-    # v2 hardcoded state='done' regardless of outcome, so a schema_violation
-    # committed as a success.
+    # Only ever reaches `done`. land() routes everything else (ADR-0013).
     with db.tx():
         n = db.exec("""
-            UPDATE tasks SET state=%s, outcome=%s, result_ref=%s, result_summary=%s,
+            UPDATE tasks SET state='done', outcome=%s, result_ref=%s, result_summary=%s,
                              check_result=%s, prompt_ref=%s, model_used=%s,
                              tokens_in=%s, tokens_out=%s, cost_usd=%s, updated_at=now()
-             WHERE id=%s AND lease_holder=%s AND attempts=%s
-        """, TERMINAL_STATE[result.outcome], result.outcome, ...,
+             WHERE id=%s AND lease_holder=%s AND attempts=%s AND state='leased'
+        """, result.outcome, ...,
              task.id, worker_id, attempt)          # ← attempt is the fencing token
         if n == 0:
             raise StaleWriter(task.id)             # a re-claimed zombie loses here
 
         if new_tasks:
             db.exec("INSERT INTO tasks (...) VALUES ... ON CONFLICT (id) DO NOTHING", new_tasks)
-            db.exec("INSERT INTO outbox (task_id, kind) SELECT id, kind FROM ...", new_tasks)
+        ledger.commit_attempt(task, attempt, result)    # core §5.7: same transaction
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -814,7 +862,7 @@ def worker(role):
             result = run_jig(role, task, attempt)
             new_tasks = plan_emissions(role, task, result.payload) if result.payload else []
             run_hooks("pre_commit", task, result)
-            commit(task, attempt, result, new_tasks)
+            land(role, task, attempt, result, new_tasks)
             committed = True
         except StaleWriter:
             pass                                     # newer claim owns it; drop ours silently
@@ -873,6 +921,9 @@ def heartbeat(task, attempt, ttl):
 #     layer 7 reads the last charged attempt. v4's `attempt > 0` was always true,
 #     because the claim increments attempts first.
 #   · reject_if_deps_invalid over every shape. Rule 140.
+#   · ADR-0013: core's six states stand, and land() routes every outcome. The oracle
+#     decides `done`, a misclassified card becomes a split on its own row, hidden output
+#     stays out of layer 7, and layer 7 and effort read evidence attempts only. outbox is gone.
 #   · ADR-0012: post_tool_call and layer 7 output are normalized. tool_audit keeps
 #     the duration and raw bytes, and a cache hit writes a zero-cost model_calls row.
 #
