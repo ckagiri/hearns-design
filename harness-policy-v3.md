@@ -210,6 +210,9 @@ cannot run anything. This is rule 25 available at the cheapest possible price: n
 the card is asked to honour, but a capability it was never given. It also puts layer 3 on the same
 footing as layer 2, which had a selection discipline (rules 119–122) while tools had none.
 
+**Command output is normalized before the model sees it** (rule 144, ADR-0012). A tool or check type
+without a normalizer is a type error. Core §8 gives the reason, and `tool_audit` keeps what it removes.
+
 **The runtime is part of `config_hash`.** It assembles the prompt, so a version change changes what
 cards saw whether or not any jig moved. It is pinned in the lockfile and an upgrade is a run
 boundary (R60).
@@ -352,6 +355,9 @@ attempt 3 → tier up + fresh-eyes framing       ← the current rule 68
 
 Rung 2 is the one that follows from §2.0.1: if turns are the expensive thing, buy fewer turns before
 buying a bigger model.
+
+These count **charged** attempts: `attempts` less the card's free rows (ADR-0011). An outage should not
+raise a card's effort or tier.
 
 **At the tier ceiling, escalation becomes a fresh-eyes framing in the retry context** — prior
 attempts' check output plus *two prior attempts; read their failures; you own this now*. Without

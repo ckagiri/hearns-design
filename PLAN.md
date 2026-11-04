@@ -106,7 +106,7 @@ Sample the output yourself.
 | P1-8 | Content store, write-side truncation | 1.5 d | **0.5 d** | DELEGATE |
 | **P1-9** | **Workspace triple: worktree + container + clone** | 3 d | **2.5 d** | **PAIR** |
 | P1-10 | `tool_audit`, including denials | 0.5 d | 0.2 d | DELEGATE |
-| P1-11 | `model_cache` + full key | 1 d | 0.5 d | DELEGATE |
+| P1-11 | `model_cache` + full key + hit rows (ADR-0012) | 1 d | 0.5 d | DELEGATE |
 | **P1-12** | Config pin + `kind_hash` over rendered layers | 1.5 d | **1 d** | **DRIVE** |
 | P1-13 | Claim-time drift check, refuse loud | 0.5 d | 0.3 d | DELEGATE |
 | P1-14 | `queries/lessons.sql` | 0.5 d | 0.3 d | PAIR |
@@ -117,7 +117,7 @@ Sample the output yourself.
 | P1-19 | Static invariants + hash-stability tests | 1 d | **0.3 d** | DELEGATE |
 | P1-20 | Property tests on the predicate | 1 d | **0.4 d** | DELEGATE |
 | P1-21 | Contention tests | 0.5 d | 0.3 d | DELEGATE |
-| P1-22 | Replay tests | 0.5 d | 0.3 d | DELEGATE |
+| P1-22 | Replay tests, including `post_tool_call` output and attempt 2 (ADR-0012) | 0.5 d | 0.3 d | DELEGATE |
 | P1-23 | `EXPLAIN ANALYZE` at realistic size (R15) | 0.5 d | 0.4 d | PAIR |
 | **P1-24** | **`CachedModel` spike — the runtime's model interface, backed by `model_cache`** | — | **0.5 d** | **DRIVE** |
 | **Gate A** | The kill-test suite, passing | 2 d + | **2 d +** | **PAIR** |
@@ -186,7 +186,7 @@ real Postgres. Budget the same as v1 and treat any saving as luck.
 | P2-10 | `integrate` — rung 1 on the merged tree | 1 d | 0.5 d | DELEGATE |
 | P2-11 | `re_verify` + round counter and breaker | 1 d | 0.5 d | DELEGATE |
 | P2-12 | `digest` — the three queries | 1 d | 0.4 d | DELEGATE |
-| **P2-13** | **Executor runtime: tool loop, per-kind tool sets, schema validation** | — | **1–1.5 d** | DELEGATE |
+| **P2-13** | **Executor runtime: tool loop, per-kind tool sets, schema validation, normalizers (rule 144)** | — | **1–1.5 d** | DELEGATE |
 | P2-14 | `skills.yaml` — hand-chosen, RED-paired | 0.5 d | 0.5 d | HUMAN |
 | P2-15 | Flatten version-delta files, strip `agents/` | 0.5 d | 0.2 d | DELEGATE |
 

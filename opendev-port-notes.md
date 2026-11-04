@@ -35,6 +35,7 @@ five:**
 | `parameter_schema` → JSON Schema | see below — load-bearing |
 | `execute(args, ctx)` | the work |
 | `format_validation_error(errors)` | see below — the non-obvious keeper |
+| `normalize(raw)` | not from OpenDev. Required by rule 144 (ADR-0012), so a sixth member |
 
 **A Protocol, not an ABC.** Structural typing suits a per-role table assembled from config; nothing
 should have to inherit to be a tool.
@@ -66,7 +67,8 @@ attempt on a parse error and not.
 ### 1.2 Four of the registry's ten execute steps → `harness/runtime/registry.py`
 
 Source: `crates/opendev-tools-core/src/registry/execution.rs:96-110`, whose docstring enumerates the
-pipeline. **Take four, in order:** resolve → validate against schema → execute → attach duration.
+pipeline. **Take four, in order:** resolve → validate against schema → execute → attach duration. Add
+normalize after execute (ADR-0012). The duration goes on the `tool_audit` row, never in the message.
 
 **The registry is a frozen `dict[str, Tool]`, built once per card from role config.** This is what
 makes rule 135 structural exactly as ADR-0005 states it — *"a `verify` card has no write tool because
@@ -86,7 +88,7 @@ at pin time. Frozen is both simpler and the stronger claim.
 - **Result truncation before results enter context** (part of step 10's sanitizer). The *placement*
   is right and worth taking — truncate before the result reaches the model, not after. But use
   **core §4.3's policy**, which already specifies it by media type: check log exit 0 → last 40 lines
-  plus timing; exit ≠ 0 → first traceback plus last 200 lines. Do not port OpenDev's sanitizer.
+  plus timing; exit ≠ 0 → first traceback plus last 200 lines. Normalize first, which removes the timing (rule 144). Do not port OpenDev's sanitizer.
 
 **Refuse the rest:**
 

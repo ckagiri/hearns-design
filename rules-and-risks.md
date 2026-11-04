@@ -173,7 +173,7 @@ deleted one.
 | 65 | A card never emits its own reviewer. Gates are pinned by the splitter. |
 | 66 | Patterned work — the same small edit across many sites — is one child enumerating every site. |
 | 67 | `decided` entries carry what, why, and what it costs if wrong. An entry with no `cost_if_wrong` is not a decision, it is a description. |
-| 68 | The final attempt escalates one tier. At the tier ceiling, which is the highest tier a role claims for that kind (ADR-0008), escalation becomes a fresh-eyes framing in layer 7. |
+| 68 | The final charged attempt (ADR-0011) escalates one tier. At the tier ceiling, which is the highest tier a role claims for that kind (ADR-0008), escalation becomes a fresh-eyes framing in layer 7. |
 | 69 | A verifier never widens its own scope. What it cannot verify it reports as `unverifiable`. |
 | 70 | Retrieval cites the risk that justified it, and the citation lands in the summary. |
 | 71 | A card's kind ratchets toward `split` and never away. A single-`execute`-child split is rejected. |
@@ -196,7 +196,7 @@ deleted one.
 | 83 | A test card's check is that the test runs and **fails**. Its implementation card depends on it. |
 | 84 | The workspace is a worktree, a container and a database clone, provisioned and destroyed together. |
 | 85 | Git happens on the host; execution in the container. Commit hooks are unreachable from inside the card. |
-| 86 | The reaper kills the container before requeuing, then resets the worktree and drops the clone. |
+| 86 | *(then resets the worktree)* → **amended**, ADR-0011: the reaper kills the container before requeuing, then removes the attempt's worktree and drops the clone. Only a failed kill blocks requeue. |
 | 87 | No worker connects to the template database. |
 | 88 | `integrate`'s check is rung 1 on the merged tree, not a clean merge. |
 | 89 | A structural card's contract cites the schema path and key. It never restates the schema. |
@@ -280,6 +280,11 @@ deleted one.
 | 137 | Check definitions live only in `checks.yaml`. A jig names no command, a card's `check_spec` picks the rungs, and layer 8 renders only rungs marked visible. |
 | 138 | For `execute`, tier and effort follow contract shape alone. Whether a card needs a test is a separate question, answered by `check_spec`. Behavioural is not a kind, a jig or a contract shape. |
 | 139 | The harness adds a file to layer 6 only from a hand-written table keyed by kind, on a trigger that is a declared field of the card: never the intent text, the contract's wording or a model call. The table and files enter `config_hash`, each row names a risk, and each file obeys P5 and P6. Built when a RED case asks for it. |
+| 140 | A dep names a card on the board or one emitted with it, and emitted cards form no cycle. Both are checked at emit, because the readiness predicate reads a missing dep as satisfied and cannot see a cycle. |
+| 141 | Each reaper pass lists the host's `card_*` containers, databases and worktrees, then reads open `task_attempts` rows, and removes anything no open row names. In that order, so a live attempt is never swept. The committed attempt's branch stays. |
+| 142 | Provisioning failures and drain releases are free, up to `runs.max_free_retries`. A failure no retry can fix halts the run rather than spending attempts, and only an unambiguous provider signal counts. A card never sees a free failure, and escalation counts charged attempts only. |
+| 143 | One host for now. Kill and workspace teardown are host-local and the reaper runs from any worker. Several hosts need the host in `lease_holder` and teardown refused elsewhere. |
+| 144 | Anything a command produced is normalized before it can enter model-visible text: tool results, `post_tool_call` rung output and layer 7's check output. A normalizer removes only what differs between two correct runs, enters `kind_hash`, and what it removes stays in `tool_audit`. Promotes R-new-5, ADR-0012. |
 
 ---
 
@@ -365,6 +370,7 @@ deleted one.
 | R59 | **Effort labels do not mean the same thing across vendors.** An abstract `high` renders to a different flag, and a different scale, per harness. | Rule 134: record the *resolved* flags in the pin, never the choice name. R48's independence requirement depends on this. |
 | R60 | **The card runtime assembles the prompt, so its version is part of what a card saw.** A library upgrade changes the system it ran under with nothing in the design moving. | Runtime pinned in the lockfile and inside `config_hash`; an upgrade is a run boundary. ADR-0004, policy §1.6. |
 | R61 | **Context exhaustion inside a card produces a confident summary.** The lease bounds time and the deadline bounds the attempt; neither bounds the window. A card that runs out of context and then reports success is indistinguishable from one that succeeded. | **None.** Recorded per rule 62 as a residual. This is ADR-0001's commission case arriving by a route the pair cannot see, and diff-reading verify (E2 arm D) is the only proposed mechanism that would catch it. |
+| R62 | **A normalizer removes something the card needed.** A card chasing a slow query sees no timing, and nothing tells it that it is missing. | The over-stripping test in core §11; `raw_ref` for diagnosis. Timing a contract needs should be a check's result rather than a log line. ADR-0012. |
 
 ---
 
@@ -372,7 +378,7 @@ deleted one.
 
 | Artifact | Purpose | Effort |
 |---|---|---|
-| `001_initial.sql` | the Phase 1 schema, consolidated | **done** |
+| `001_initial.sql` | the Phase 1 schema, consolidated. The original was lost; this is a reconstruction, see its header | **reconstructed** |
 | `make check-static` (rung 0) | the cheapest useful check in the system | half a day |
 | `tools/introspect.py` | rung 3 oracle. **Needs its own mutation tests.** | 1–2 days |
 | `schema_lint` | moves human gates off the critical path | half a day |
@@ -380,8 +386,8 @@ deleted one.
 | container image + template-DB script | the workspace triple | 1 day |
 | `hooks/regenerate_manifest.py` | generated manifest and `__init__.py` | hours |
 | commit-time namespace check | AST + XML parse over the diff, host-side | hours |
-| `queries/lessons.sql` | the query catalogue, as an acceptance test for schema fields | hours |
-| `queries/tree.sql` + static renderer | the project tree; a script, not a service | hours |
+| `queries/lessons.sql` | the query catalogue, as an acceptance test for schema fields | drafted |
+| `queries/tree.sql` + static renderer | the project tree; a script, not a service. Query drafted, renderer not | hours |
 | `skills.yaml` | per-kind skill sets, part of `config_hash` | minutes |
 | flattened version deltas | two files from the pinned bracket, dispatchers removed | hours |
 | the Odoo skill (layer 2) | RED corpus collected, then written against it | ongoing |
@@ -472,6 +478,13 @@ have never been observed** — and rules 121 and 132 are the model for what to d
 Append-only. One line per change. Date, ADR where one exists, what moved.
 
 ```
+2026-11-04  ADR-0012  command output normalized before the model sees it; replay re-executes tools; core §8's retry claim narrowed; rule 144; R62; R-new-5 promoted
+2026-11-04  —         001_initial.sql reconstructed from the documents, the original having been lost; harness/ledger/sql and queries drafted
+2026-11-04  —         core §9.3 corrected: the tree query sorted t-x.10 before t-x.2; now COLLATE tree_order
+2026-11-03  ADR-0011  free provisioning and drain, a ceiling on free retries, halting failures, per-attempt worktrees; rules 68, 86 amended; rule 142
+2026-11-03  —         core §5.1 corrected: missing deps and cycles rejected at emit; rule 140
+2026-11-03  —         core §5.4 corrected: reaper sweeps orphans by name; rule 141
+2026-11-03  —         core §5.3 corrected: one host for now, multi-node claim withdrawn; rule 143
 2026-11-03  ADR-0010  retrieval triggers are declared card fields, from a hashed table; rule 139; built when a RED case asks
 2026-11-03  ADR-0008  kind, role and jig have one job each; tools on the jig; hash per kind and tier; checks in checks.yaml; rules 68, 117, 126, 135 amended; rules 136–138
 2026-11-03  ADR-0007  task_attempts; reaper stall clause, backoff, collects failed; workspace failure table; Budget as a claim query; rule 94; R57 now partial

@@ -272,6 +272,8 @@ CREATE TABLE runs (
   spec_digest   text,              -- sha256 of the anchor, where one exists
   config_pin    jsonb NOT NULL,
   max_cost_usd  numeric(12,2),     -- Budget's limit (§5.3); outside the pin; NULL is no limit
+  max_free_retries int NOT NULL,   -- per card (ADR-0011); outside the pin; no default
+  halted_class  text,              -- set by a halting failure; refuses claims until cleared (§5.3)
   started_at    timestamptz NOT NULL DEFAULT now(),
   ended_at      timestamptz,
   outcome       text               -- 'complete' | 'abandoned' | 'gated'
@@ -365,6 +367,12 @@ ready(t) :=
 **This predicate is the scheduler.** A pure function of the graph. Not stored — nothing writes
 `ready`, so nothing can lie about it. No role may override it.
 
+**A dep must name a real card, and the predicate cannot check that.** `NOT EXISTS` over an id with no
+row finds nothing, so a missing dep reads as satisfied, against ADR-0006. A cycle stays `pending`
+forever, and no predicate sees it. Both are rejected when cards are emitted, in the emit transaction:
+a dep names a card on the board or one emitted with it, and the emitted cards form no cycle (rule 140).
+An existing card cannot depend on one not yet emitted, so checking the emitted set is enough.
+
 ### 5.2 Why clause (b) exists
 
 `done` on a split card means *I decomposed*, not *the work is finished*, and dependents cannot tell
@@ -401,6 +409,8 @@ WITH candidate AS (
                          JOIN model_calls m ON m.task_id = x.id
                         WHERE r.root_id = t.root_id
                         GROUP BY r.max_cost_usd), false)
+     AND NOT EXISTS (SELECT 1 FROM runs h                            -- halted run
+                      WHERE h.root_id = t.root_id AND h.halted_class IS NOT NULL)
    ORDER BY t.priority DESC, t.created_at
    LIMIT 1 FOR UPDATE OF t SKIP LOCKED
 ), claimed AS (
@@ -419,13 +429,20 @@ WITH candidate AS (
 SELECT * FROM claimed;
 ```
 
-`SKIP LOCKED` gives multi-node claiming with no distributed lock. Lease deadlines come from the
-**store's** clock — clock skew between workers is real.
+**One host for now** (rule 143). `SKIP LOCKED` would allow claiming across machines with no distributed
+lock, but the kill and workspace teardown in §5.4 only work on the local host, and the reaper runs from
+any worker. Running on several hosts needs the host in `lease_holder` and teardown refused elsewhere.
+
+Lease deadlines come from the **store's** clock — clock skew between workers is real.
 
 **Budget refuses in the claim, not in `ready(t)`,** which stays a pure function of the graph. Spend is
 summed from `model_calls` against `runs.max_cost_usd`. It is a brake rather than a guarantee: concurrent
 claims see the same sum, and cards already claimed keep spending. Raising the limit changes no pin,
 because it changes nothing a card saw.
+
+**A halted run refuses the same way.** *(ADR-0011.)* A failure no retry can fix (`auth_rejected`,
+`billing_exhausted`, `model_unavailable`) sets `runs.halted_class` in the failing transaction. Cards in
+flight finish, and nothing new is claimed until a person clears it or abandons the run.
 
 **Config drift check, at claim time.** The worker recomputes its own `kind_hash` (§8.1.1) and
 compares it to the run's pinned value. A mismatch **fails loud** and the worker refuses the card
@@ -483,14 +500,22 @@ install, and an immediate one against an outage spends all of a card's attempts 
 ```
 1. kill the container            (named from the card id and attempt, §6)
 2. drop the workspace database
-3. reset the worktree hard, clean -fdx
+3. remove the attempt's worktree
 4. flip the row to pending
 ```
 
 Fencing guarantees a stale writer cannot *commit*. It does not guarantee it cannot *write*. Requeue
-first and two live processes edit the same worktree. This closes a failure v2 recorded but did not
+first and a live process keeps writing beside its own retry. This closes a failure v2 recorded but did not
 resolve. §6 states what a failure at each step does. `$2` keeps a flip from landing on a newer claim,
-and the state check keeps it from landing on a commit that won the race.
+and the state check keeps it from landing on a commit that won the race. Teardown cannot land on a newer
+claim either, because every name it touches carries the attempt it selected (ADR-0011).
+
+**Orphans are swept by name** (rule 141). The candidates above miss a container left by a crash after
+commit, since the row is `done`, and one left by the deadline flip, which runs no teardown. So each pass
+also lists the host's `card_*` containers, databases and worktrees, **then** reads the open
+`task_attempts` rows, and removes anything whose name no open row derives. The order matters: a row
+opens in the claim, before anything is provisioned, so reading rows last can never sweep a live attempt.
+The branch of a committed attempt stays, because `integrate` needs it.
 
 **Why there is no watchdog watching the watchdog.** *(Added 2026-08-18.)* A comparable tool answers
 stall detection with a four-role escalation chain — a watcher that may not kill, an executioner it
@@ -589,7 +614,8 @@ SIGTERM → stop claiming immediately
         → exit
 ```
 
-Grace period must exceed observed p99 drain time.
+Grace period must exceed observed p99 drain time. An early release is free: a restart is not the
+card's failure (ADR-0011).
 
 ### 5.9 Scheduling
 
@@ -604,8 +630,8 @@ a timer and it has never been the bottleneck in anything measured.
 
 | Component | Provides | Lifetime |
 |---|---|---|
-| **git worktree** | source isolation; a branch for integration | per card |
-| **container** | pinned runtime, cgroup limits, network deny, **a kill handle** | per card, ephemeral |
+| **git worktree** | source isolation; a branch for integration | per attempt |
+| **container** | pinned runtime, cgroup limits, network deny, **a kill handle** | per attempt, ephemeral |
 | **database or equivalent** | the card's check environment | per attempt |
 
 **Git on the host, execution in the container.** A worktree's `.git` is a file pointing into the
@@ -630,13 +656,14 @@ template at run start and clone per attempt. Without this, parallel workers seri
 environment construction and the parallelism claim does not survive contact.
 
 **Names derive from the card, never from card output.** *(ADR-0007.)* The key is the card id with `.`
-and `-` mapped to `_`. The worktree is `<workspace_root>/<key>`; the container and database are
-`card_<key>_attempt<n>`. Ids are a hex hash plus dotted segments, so the mapping cannot collide. A
+and `-` mapped to `_`. The worktree is `<workspace_root>/card_<key>_attempt<n>`, on a branch of that name,
+and the container and database share it (ADR-0011). `integrate` merges the branch of the committed
+attempt, which is `tasks.attempts`. Ids are a hex hash plus dotted segments, so the mapping cannot collide. A
 name over 63 bytes fails provisioning, because Postgres truncates longer identifiers without an error.
 Because names are derivable, the reaper can kill a container whose worker died before recording
 anything.
 
-**Teardown checks its target first.** Before `reset --hard`, `clean -fdx` or `DROP DATABASE`: the
+**Teardown checks its target first.** Before removing a worktree or running `DROP DATABASE`: the
 resolved worktree path must be strictly inside `workspace_root`, and the database name must match
 `card_*`, which excludes the template. A failed check refuses the step and counts as a blocking
 failure below.
@@ -645,10 +672,10 @@ failure below.
 
 | Stage | Runs | On failure or timeout |
 |---|---|---|
-| Provision: worktree, container, clone | after claim, each attempt | Attempt ends as `provision_failed`, consumes an attempt, retries with backoff. Infrastructure, not `harness_bug`. |
+| Provision: worktree, container, clone | after claim, each attempt | Attempt ends as `provision_failed` and retries with backoff, free up to `runs.max_free_retries` (ADR-0011). Infrastructure, not `harness_bug`. |
 | Kill the container | before any requeue | **Blocks requeue.** The row stays put; the next reaper pass retries. |
 | Drop the attempt's database and filestore | before any requeue | Logged. Requeue proceeds: a retry never reuses the name, and §10 detects the orphan. |
-| Reset the worktree | before any requeue | **Blocks requeue.** A retry would inherit the files. |
+| Remove the attempt's worktree and branch | before any requeue | Logged. Requeue proceeds: a retry never reuses the names, and the §5.4 sweep collects the worktree. |
 
 A blocked teardown is the inert failure §5.4 relies on: the card stalls visibly rather than running
 next to a live writer or on a dirty worktree.
@@ -679,14 +706,30 @@ Every human action is a row in `reviews`: what they had open, what they chose, w
 
 1. Record every response in `model_cache`, keyed on the **rendered prompt** plus model, **reasoning
    effort**, sampling params, tool-schema hash and recalled note ids.
-2. Replay serves from cache and makes zero outbound calls. Any difference is a genuine difference in
-   your code.
+2. Replay serves from cache and makes zero outbound calls. Tools and checks re-execute, and only the
+   model is served from cache. Any difference is a genuine difference in your code.
 3. Interleaving may differ between runs; the **causal graph** will not. Assert on the terminal
    graph, not execution order.
 4. Content refs are immutable, so an old run is inspectable exactly as each step saw it.
 
-**Checkpointing is mostly solved by accident.** A retried card re-runs and every model call it
-previously made hits the cache.
+**Command output is normalized before the model can see it** (rule 144, ADR-0012). The key is the bytes
+on the wire, so anything a command prints reaches the key of every later call in that attempt. This
+covers tool results, `post_tool_call` rung output and layer 7's check output. A normalizer removes only
+what differs between two correct runs: clock times, durations, PIDs, `card_<key>_attempt<n>` names and
+ordering that carries no meaning. Normalize first, then truncate. What it removes stays in `tool_audit`.
+In a live run a miss costs one model call. In replay it raises `ReplayMiss`, which detects a difference
+and corrupts nothing.
+
+**What the cache buys a retry.** *(ADR-0012.)*
+
+| Case | First call's key | Expected |
+|---|---|---|
+| Replay | unchanged | every call hits; a miss raises |
+| Free retry (ADR-0011) | unchanged | calls hit up to where the failed attempt stopped |
+| Charged retry, including a dead worker | moved by effort or model, and layer 7 | none hit |
+| Reset-from-a-point (§8.2) | unchanged upstream | upstream hits; the raised subtree does not |
+
+A hit writes a `model_calls` row at zero cost, so these rates are a query.
 
 **How the guarantee is kept.** *(Added 2026-08-18. ADR-0004.)* The zero-outbound-calls promise in
 point 2 is only as good as the layer that can make a call. Where the card runtime is a library that
@@ -737,6 +780,7 @@ kind_hash(k, t) = H( runtime_hash,
                    output_schema(k),
                    check_ladder(k),         # layer 8, plus the rungs hidden from the card
                    tool_schemas(k),         # layer 3
+                   normalizers(k),          # tools and checks, with their pattern tables (rule 144)
                    skills_rendered(k),      # layer 2
                    model(k, t), effort(k, t), temperature(k, t) )
 ```
@@ -864,7 +908,7 @@ controller-based tool's equivalent is a file kept by discipline and truncated wh
 select id, title, kind, outcome, attempts, tier, caused_by
 from tasks
 where project = :p
-order by string_to_array(id, '.');   -- NOT lexical: 't-x.10' sorts before 't-x.2'
+order by string_to_array(id, '.') COLLATE tree_order;   -- NOT lexical: 't-x.2' sorts before 't-x.10'
 ```
 
 | In the row | Behind a click | Deliberately absent |
@@ -918,18 +962,19 @@ Only those the substrate itself must handle. Policy-level modes live in `harness
 
 | Mode | Tell | Response |
 |---|---|---|
-| Worker dies mid-card | lease expiry | reaper: kill, drop, reset, requeue |
+| Worker dies mid-card | lease expiry | reaper: kill, drop, remove, requeue |
 | **Zombie writer** | stale worker resumes after reclaim | fencing rejects the commit; the container kill prevents the writes |
 | Crash-looping card | `attempts` climbs with no explicit failure | `attempts` counts deliveries, so `max_attempts` bounds it |
-| Infrastructure failure consuming an attempt | `failure_class` names it | narrow allow-list raises `max_attempts` by one; `attempts` is the fence and never falls. Backoff still applies, and only `deadline_at` bounds the total |
+| Infrastructure failure consuming an attempt | `failure_class` names it | narrow allow-list raises `max_attempts` by one; `attempts` is the fence and never falls. Backoff still applies. Past `runs.max_free_retries` the failure is charged (ADR-0011) |
 | Silent loop | `last_progress_at + stall_after < now()` | reaper: as worker death, recorded `stalled` |
 | Stall clause killing live work | `stalled` attempts that succeed on retry with no config change | raise `stall_after`; ADR-0007 sets the threshold for deleting the clause |
-| Blocked teardown | leased past expiry, or `failed`, and not clearing; kill or reset errors in the reaper log | none automatic: a person looks. The next pass retries |
-| Provisioning outage | `provision_failed` climbing across unrelated cards | backoff; quarantines at `max_attempts` with the class named |
+| Blocked teardown | leased past expiry, or `failed`, and not clearing; kill errors in the reaper log | none automatic: a person looks. The next pass retries |
+| Provisioning outage | `provision_failed` climbing across unrelated cards | free retries with backoff; quarantines past `runs.max_free_retries` with the class named |
+| Failure no retry can fix | `runs.halted_class` set; pending cards, none claimed | a person fixes the credential or account and clears it, or abandons the run |
 | Run over budget | pending cards, none claimed, spend at or above `runs.max_cost_usd` | a person raises the limit or abandons the run |
 | Runaway runtime | `deadline_at` | quarantine; never extended by heartbeats |
 | Deploy-induced churn | reap count spikes on release | graceful drain |
-| Orphaned workspace | clone or container count exceeds live leases | reaper collects as part of kill-first |
+| Orphaned workspace | clone or container count exceeds live leases | the reaper's sweep by name (§5.4) |
 | Clock skew | leases expiring early or late | all deadlines from the store's clock |
 
 ---
@@ -944,26 +989,34 @@ good**. This section is only the first.
   fixtures, and the `config_hash` invariant: **a hash change with no version bump fails the build**.
 - **Hash stability tests** — reformat the config, reorder `skills.yaml` without changing membership,
   rewrite a non-rendering comment: `kind_hash` must not move. Change a rendering comment, swap one
-  skill file's content, bump an effort: it must move. These are the tests that make cross-run
+  skill file's content, bump an effort, change a normalizer: it must move. These are the tests that make cross-run
   comparison mean anything, and they are cheap.
 - **Property tests on the predicate** — generate graphs, assert no card is ready whose subtree is
-  unfinished.
+  unfinished, and that emission rejects a missing dep or a cycle.
 - **Contention tests** — N workers, one board, assert every card is claimed exactly once.
 - **Kill tests** — `SIGKILL` a worker mid-card; `docker kill` a container mid-write. Assert clean
-  requeue, worktree reset, workspace collection, and that the stale process's writes are absent.
+  requeue, worktree removal, workspace collection, and that the stale process's writes are absent.
+  Assert that a slow second reaper leaves the next attempt's workspace intact, and that the sweep
+  collects a container left after a crash past commit.
   Assert one closed `task_attempts` row per delivery, and `not_before` set on the requeued card.
 - **Stall tests** — hang the card loop while the heartbeat keeps running; assert it is reaped as
   `stalled`. Run a tool for longer than the base TTL within its timeout; assert it is not.
 - **Teardown tests** — make the kill fail, then the reset, then the drop. Assert the first two block
   requeue and the third does not. Point teardown outside `workspace_root`; assert it refuses.
-- **Replay tests** — same run twice from cache; assert identical terminal graph.
+- **Replay tests** — same run twice from cache; assert identical terminal graph. Cover `post_tool_call`
+  output and a card that reaches attempt 2.
+- **Normalizer stability tests** — for each tool and check type, two runs with a different clock, PID and
+  attempt number give identical bytes. Odoo's test uses a captured real log. A failing fixture's
+  normalized output still contains its failure text and exit status.
+- **Free-retry hit tests** — fail a card with a free class after turn *k*; the retry serves *k* calls
+  from cache.
 
 ### 11.1 Gate A
 
 Before anything is built on top of the substrate:
 
 > **Does crash recovery work reliably under contention?** Includes killing a container mid-write and
-> confirming clean requeue, worktree reset and clone collection.
+> confirming clean requeue, worktree removal and clone collection.
 
 This is harder to test than a poll-loop crash, and it is the right place to spend the difficulty.
 

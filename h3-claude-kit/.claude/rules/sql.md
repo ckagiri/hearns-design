@@ -32,8 +32,8 @@ paths:
 
 - `queries/lessons.sql` is an **acceptance test for schema fields**: a field nobody can write a
   query against is a field to remove. Add the query when you add the field.
-- `queries/tree.sql` orders by `string_to_array(id, '.')`, not lexically — `t-x.10` must not
-  sort before `t-x.2`.
+- `queries/tree.sql` orders by `string_to_array(id, '.') COLLATE tree_order`, not lexically —
+  `t-x.10` must not sort before `t-x.2`. Without the collation, it does.
 - Human-facing output is a query rendered to static HTML by a script. The moment it acquires a
   backend, a login or a write path it has become the dashboard anti-milestone.
 

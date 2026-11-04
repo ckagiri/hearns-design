@@ -57,14 +57,23 @@ class Outcome(StrEnum):
 class FailureClass(StrEnum):
     RATE_LIMITED       = "rate_limited"        # ─┐
     OVERLOADED         = "overloaded"          #  │ free retry
-    TIMEOUT            = "timeout"             # ─┘
-    CONTEXT_EXCEEDED   = "context_exceeded"    # ─┐
+    TIMEOUT            = "timeout"             #  │
+    PROVISION_FAILED   = "provision_failed"    #  │ ADR-0011
+    RELEASED           = "released"            # ─┘ drain's early release
+    AUTH_REJECTED      = "auth_rejected"       # ─┐
+    BILLING_EXHAUSTED  = "billing_exhausted"   #  │ halts the run. unambiguous signals only
+    MODEL_UNAVAILABLE  = "model_unavailable"   # ─┘
+    STALLED            = "stalled"             # ─┐ ADR-0007
+    CONTEXT_EXCEEDED   = "context_exceeded"    #  │
     PROVIDER_REFUSED   = "provider_refused"    #  │ consumes an attempt
     MALFORMED_OUTPUT   = "malformed_output"    #  │
     TURN_LIMIT         = "turn_limit"          # ─┘ NEVER a success (RED-000)
     HARNESS_BUG        = "harness_bug"         # quarantine, do not retry
 
-FREE_RETRY = {FailureClass.RATE_LIMITED, FailureClass.OVERLOADED, FailureClass.TIMEOUT}
+FREE_RETRY = {FailureClass.RATE_LIMITED, FailureClass.OVERLOADED, FailureClass.TIMEOUT,
+              FailureClass.PROVISION_FAILED, FailureClass.RELEASED}
+HALTS_RUN  = {FailureClass.AUTH_REJECTED, FailureClass.BILLING_EXHAUSTED,
+              FailureClass.MODEL_UNAVAILABLE}
 
 
 # ADR-0006. A dependency is satisfied by `done` and by nothing else.
@@ -276,7 +285,7 @@ def render(role, task, deps, orientation, last_attempt) -> list[Block]:
         Block(4, "run",     orientation + constraints_verbatim(task.root_id)),   # orientation
         Block(5, "card",    render_task_layer(task)),        # task
         Block(6, "card",    render_deps_layer(deps)),        # deps
-        Block(7, "attempt", render_retry_layer(last_attempt)),   # retry: '' when attempts == 0
+        Block(7, "attempt", render_retry_layer(last_attempt)),   # retry: '' until a charged attempt fails
     ]
 
     # Static invariant, milliseconds, high value: the stable prefix must be
@@ -361,8 +370,8 @@ def render_retry_layer(last) -> str:
     THE PREVIOUS ATTEMPT FAILED. Read this before editing anything.
     failure_class: {last.failure_class}
     checks:
-    {truncate(last.check_output, N)}
-    """
+    {truncate(normalize_check_log(last.check_output), N)}
+    """                                  # rule 144: a replayed check writes a new log
 
 
 def render_deps_layer(deps) -> str:
@@ -458,6 +467,7 @@ class CachedModel:
         # taken over what the adapter built — not over `req`. A recording
         # proxy asserts these agree; see the kept test.
         if hit := cache.get(key):
+            record_call(req, key, served_from_cache=True, cost=0)    # ADR-0012
             return hit
         if self.mode == "replay":
             raise ReplayMiss(key)                    # Gate A asserts zero outbound
@@ -501,11 +511,14 @@ def dispatch_tool(task, attempt, role, call) -> str:
     # cache key and replay dies at the SECOND model call — presenting as a
     # cache miss you would blame on the model. Non-optional at the type level.
     out = t.normalize(raw)
+    raw_ref = content.put(raw) if out != raw else None   # the record keeps what the model loses
 
     for r in rungs_for(task, "post_tool_call"):     # welded to the write, VISIBLE by design
-        out += "\n" + CHECKS[r.type].run(r, task, best_effort=True)
+        check = CHECKS[r.type]                      # rule 144: this path needs it as well
+        out += "\n" + check.normalize(check.run(r, task, best_effort=True))
 
-    audit(task, attempt, call, decision="allowed", args_digest=sha256(call.args))
+    audit(task, attempt, call, decision="allowed", args_digest=sha256(call.args),
+          duration_ms=..., raw_ref=raw_ref)         # on the row, never in the message
     return out
 
 
@@ -518,7 +531,9 @@ def run_jig(role, task, attempt) -> JigResult:
     deps = ledger.dependency_summaries(task)          # summaries, not bodies
     blocks = render(role, task, deps,
                     orientation=run_orientation(task.root_id),
-                    last_attempt=ledger.last_attempt(task) if attempt > 0 else None)
+                    # CHARGED, not latest. A free failure was not the card's doing, and
+                    # telling it would also move the bytes the replay cache keys on.
+                    last_attempt=ledger.last_charged_attempt(task))
 
     prompt_ref = content.put(join_for_audit(blocks))  # store what the model SAW
     req = Request(blocks=blocks, tools=[TOOLS[n].schema for n in j.tools],
@@ -658,7 +673,24 @@ def plan_emissions(role, task, payload) -> list[NewTask]:
     emitted = []
     for spec in role.jig.emits:            # order matters: gates see the children
         emitted += SHAPES[spec.shape](role, task, payload, spec, emitted)
+    reject_if_deps_invalid(emitted)        # over every shape, so gates are covered
     return emitted
+
+
+def reject_if_deps_invalid(cards):
+    """Rule 140. The predicate reads a missing dep as satisfied, because NOT EXISTS
+       over an id with no row finds nothing, and it cannot see a cycle, which stays
+       pending forever. An existing card cannot depend on one not yet emitted, so
+       a cycle can only lie among these cards."""
+    ids = {c.id for c in cards}
+    for c in cards:
+        for d in c.deps:
+            if d not in ids and not ledger.exists(d):
+                raise SplitRejected("unknown_dep", c.id, d)
+    try:
+        TopologicalSorter({c.id: [d for d in c.deps if d in ids] for c in cards}).prepare()
+    except CycleError as e:
+        raise SplitRejected("dep_cycle", e.args[1])
 
 
 @register(SHAPES, "children")
@@ -777,7 +809,8 @@ def worker(role):
         task, attempt = claim.task, claim.attempts   # fencing token, returned at claim time
         hb, committed = spawn_background(heartbeat, task, attempt, role.lease_ttl), False
         try:
-            run_hooks("post_claim", task)            # workspace reset, template clone
+            run_hooks("post_claim", task)            # provision the attempt's workspace.
+                                                     # a failure raises PROVISION_FAILED.
             result = run_jig(role, task, attempt)
             new_tasks = plan_emissions(role, task, result.payload) if result.payload else []
             run_hooks("pre_commit", task, result)
@@ -789,9 +822,12 @@ def worker(role):
             ledger.fail(task, attempt, FailureClass.MALFORMED_OUTPUT, detail=e)
             committed = True                         # our own row, fenced inside ledger.fail
         except HarnessFailure as e:
-            # FREE_RETRY classes resume WITHOUT consuming an attempt (§C10).
+            # FREE_RETRY classes resume WITHOUT consuming an attempt (§C10), up to
+            # runs.max_free_retries, which ledger.fail counts from task_attempts.
+            # HALTS_RUN sets runs.halted_class in the same transaction (ADR-0011).
             ledger.fail(task, attempt, e.failure_class,
-                        consume=e.failure_class not in FREE_RETRY)
+                        consume=e.failure_class not in FREE_RETRY | HALTS_RUN,
+                        halt=e.failure_class in HALTS_RUN)
             committed = True
         except Exception as e:
             ledger.fail(task, attempt, FailureClass.HARNESS_BUG, detail=e)
@@ -833,6 +869,12 @@ def heartbeat(task, attempt, ttl):
 #     so every child of a split recorded the split's hash.
 #   · render()'s prefix check could never fire: it tested the slice that is all-STABLE
 #     by definition. It now tests the rest.
+#   · ADR-0011: PROVISION_FAILED and RELEASED are free, HALTS_RUN stops claims, and
+#     layer 7 reads the last charged attempt. v4's `attempt > 0` was always true,
+#     because the claim increments attempts first.
+#   · reject_if_deps_invalid over every shape. Rule 140.
+#   · ADR-0012: post_tool_call and layer 7 output are normalized. tool_audit keeps
+#     the duration and raw bytes, and a cache hit writes a zero-cost model_calls row.
 #
 # ══════════════════════════════════════════════════════════════════════
 # What changed in v4 (registries)
@@ -929,8 +971,7 @@ def heartbeat(task, attempt, ttl):
 # list. Unnormalised output makes turn N+1's cache key a function of
 # directory ordering and wall-clock timings; replay then dies at the second
 # model call and presents as a cache miss you would blame on the model.
-# This is not in core or policy and it belongs in one of them — arguably a
-# bigger determinism threat than sampling, which §C8 already handles.
+# Promoted to rule 144 by ADR-0012, which also covers check output.
 #
 # Elided: the claim query and readiness predicate (§C5 — the ledger, not the
 # jig); the reaper; reset-from-a-point; digest SQL.

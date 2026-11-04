@@ -520,8 +520,8 @@ currently names only the first.
 
 | Component | Provides | Lifetime |
 |---|---|---|
-| **git worktree** | source isolation; a branch for `integrate` | per card |
-| **container** | pinned Odoo/python/wkhtmltopdf, cgroup limits, network deny, **a kill handle** | per card, ephemeral |
+| **git worktree** | source isolation; a branch for `integrate` | per card attempt (ADR-0011) |
+| **container** | pinned Odoo/python/wkhtmltopdf, cgroup limits, network deny, **a kill handle** | per card attempt, ephemeral |
 | **database clone** | rung 1–3 execution | per card attempt |
 
 **Rename §11's unit.** A workspace is the triple, provisioned together and torn down together, not a
@@ -557,7 +557,8 @@ editing.
 - The container's name derives from the card id and attempt (core §6, ADR-0007), so the reaper can
   find it even if the worker died before recording anything.
 - The reaper's order is **kill, then requeue.** Requeue-first gives you two live writers.
-- After the kill, the worktree is hard-reset to the card's base commit before the retry claims it.
+- After the kill, the attempt's worktree is removed. The retry gets its own, from the card's base
+  commit (ADR-0011).
 
 This is a stronger argument for containers in this architecture than sandboxing is, and it should be
 recorded that way in §13.
@@ -609,7 +610,7 @@ per-tool table to maintain. §13's principle survives; its elaboration does not.
 ### 6.8 Consequence for Gate A
 
 **Amend §20.1.** Gate A ("does crash recovery work reliably under contention") now has to include:
-kill a container mid-write, confirm the reaper requeues cleanly, confirm the worktree resets,
+kill a container mid-write, confirm the reaper requeues cleanly, confirm the worktree is removed,
 confirm the stale container's writes are not present, confirm the orphaned database clone is
 collected. That is harder to test than a poll-loop crash and it is the right place to spend the
 difficulty.
@@ -856,7 +857,7 @@ the wrong user. That is why §8.3's test-first pairing is not optional here.
 
 ### 11.1 Greenfield cards are mostly retry-safe, and this is worth saying
 
-Because every attempt gets a fresh database clone and a reset worktree, a failed Odoo card leaves
+Because every attempt gets a fresh database clone and a fresh worktree, a failed Odoo card leaves
 nothing behind. Test 3 passes trivially for the structural half and most of the behavioural half.
 That is a genuine property of this domain and it makes retry cheap.
 
@@ -1052,7 +1053,7 @@ Continuing findings-2's numbering.
 | 83 | A test card's check is that the test runs and **fails**. Its implementation card depends on it. |
 | 84 | The workspace is a worktree, a container and a database clone, provisioned and destroyed together. |
 | 85 | Git happens on the host; execution happens in the container. Commit is a harness operation and the `pre_commit` hooks are unreachable from inside the card. |
-| 86 | The reaper kills the container before requeuing, then resets the worktree and drops the clone. |
+| 86 | The reaper kills the container before requeuing, then removes the attempt's worktree and drops the clone (amended, ADR-0011). |
 | 87 | No worker connects to the template database. |
 | 88 | `integrate`'s check is rung 1 on the merged tree, not a clean merge. |
 | 89 | A structural card's contract cites the schema path and key. It never restates the schema. |

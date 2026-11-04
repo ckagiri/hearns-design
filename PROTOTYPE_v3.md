@@ -177,7 +177,7 @@ its lease; one killed mid-write; one that exhausts its turn limit.
 
 ### Exit criteria
 
-- Kill tests green: container killed mid-write, clean requeue, worktree reset, clone collected,
+- Kill tests green: container killed mid-write, clean requeue, worktree removed, clone collected,
   stale process's writes absent.
 - Contention: N workers, twelve cards, each claimed exactly once.
 - Replay: same run twice from cache, identical terminal graph.
@@ -616,7 +616,7 @@ forever with no signal. Mitigation: the emit-time gate in §8. Detector: dep cou
 **R-new-5 — unnormalised tool output breaks replay at the second model call.** Directory ordering,
 timings and absolute paths enter turn N+1's key. Symptom is a cache miss attributed to the model.
 Mitigation: `normalize` non-optional on `ToolImpl`. Arguably a bigger determinism threat than
-sampling, which §C8 already handles at length. *(Promote to a rule, not just a risk.)*
+sampling, which §C8 already handles at length. *(Promoted to rule 144, ADR-0012.)*
 
 **R-new-6 — hand-rolled canonicalization produces locally-stable hashes.** Key order, Unicode form,
 float repr. Mitigation: an RFC 8785 implementation, pinned into `config_hash`.

@@ -41,7 +41,8 @@ Nothing above that line needs a model call to test.
 | `odoo-adaptation.md` | 1,113 | The domain instantiation: conventions, namespaces, check ladder, the schema anchor, workspace mechanics. |
 | `jigs-layers-skills-v2.md` | 511 | How many jigs, what goes in which layer, how skill sets are chosen and pruned. |
 | `change-register.md` | 365 | **Numbering authority.** Rules 1–130, risks R1–R53, the data-model diff, the sequenced action list. |
-| `001_initial.sql` | 330 | The Phase 1 migration, consolidated. |
+| `001_initial.sql` | 226 | The Phase 1 migration. **Reconstructed** 2026-11-04 from these documents after the 330-line original was lost; its header marks what is inferred. |
+| `harness/ledger/sql/`, `queries/` | — | **Drafts.** Ledger statements transcribed from core §5 where core has them, and the query catalogue. |
 
 **Core is settled; policy is not.** That asymmetry is why they are separate files. Every policy
 section carries *what would change it*; core carries the same list once, in §13, because it is
@@ -58,6 +59,8 @@ expected to be short.
 | `adr/0008-kind-role-and-jig-have-one-job-each.md` | Each kind has one jig, each kind and tier one role. Tools on the jig, checks in `checks.yaml`, hash per kind and tier. Behavioural is not a kind. |
 | `adr/0009-split-schema-has-a-domain-slot-for-owns.md` | **Proposed, held** until `generate.py` is measured. Odoo's `owns` keys move out of the split jig into a domain slot. |
 | `adr/0010-retrieval-triggers-are-card-properties.md` | Knowledge narrower than a kind reaches layer 6 from a hashed table, triggered by declared card fields. Built when a RED case asks for it. |
+| `adr/0011-what-a-workspace-or-provider-failure-costs-a-card.md` | Provisioning failures are free up to a ceiling, a failure no retry can fix halts the run, and worktrees are per attempt. Amends ADR-0007. |
+| `adr/0012-command-output-is-normalized-before-the-model-sees-it.md` | Anything a command produced is normalized before the model can see it. Replay re-executes tools. Narrows what the cache buys a retry. |
 
 An ADR exists so a deletion keeps its argument. Without one, a removed section is just a gap that
 grows back.
