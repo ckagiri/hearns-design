@@ -10,7 +10,7 @@ row; rules 85 and 141; ADR-0013's "the attempt row records what the card was", w
 **Adds:** rules 150–152; R64
 **Guarded by:** the tests under each decision below
 **Informed by:** `deepseek-ai/deepseek-harness` at `8bd07339`, read 4 November 2026 and not run here. See
-`deepseek-harness-borrow-notes.md`. Decision 1 rests on git probes run for this ADR: git 2.50.1 on macOS,
+`borrow-notes.md` (the original DeepSeek note is in git history). Decision 1 rests on git probes run for this ADR: git 2.50.1 on macOS,
 scratch repositories, marker files only, no container and no harness.
 
 ## Context

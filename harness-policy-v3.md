@@ -831,7 +831,7 @@ removes the fallback. If the record turns out not to answer questions the baseli
 is no second thing this bought.
 
 **OpenCode comes close to the differentiator.** *(Added 2026-11-04. Source: `anomalyco/opencode` at
-`93f30ca`, read and not run; see `opencode-borrow-notes.md`.)* Core §13 asks for this to be said. Its
+`93f30ca`, read and not run; see `borrow-notes.md`.)* Core §13 asks for this to be said. Its
 record survives the process dying, and a boot sweep resumes unfinished sessions up to a counted limit.
 So "the record survives" no longer separates this design, and "there is no controller" has to carry
 the claim. OpenCode recovers by resuming a controller and telling it to continue, and its sweep assumes

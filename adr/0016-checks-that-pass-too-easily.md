@@ -1,12 +1,13 @@
 # ADR-0016: Four ways a check can pass without meaning anything
 
-**Status:** Proposed. Draft for the owner's review.
+**Status:** Proposed, held until implementation. Reviewed before the first plan item that builds what it decides, and
+settled in full before any run, because rows a run never wrote cannot be recovered.
 **Date:** 2026-11-06
 **Would amend:** core §4.1, §6, §8.1, §10, §11 (additions; no core §13 trigger applies); policy §3.8, §4.1;
 `odoo-adaptation` §4, §8.3; rules 83, 145; ADR-0013 decision 3; `jig-sketch.py`; `harness/ledger/sql/`
 **Would add:** rules 153–156; R65
 **Guarded by:** the tests under each decision, none written yet
-**Informed by:** `johnson-repos-borrow-notes.md` New 1, 2; `johnson-later-repos-borrow-notes.md` New 2, 3, 7.
+**Informed by:** `borrow-notes.md` B9, B10, B11 and B12, with B10 including a guard that fails to load.
 The argument rests on this design's own paths. Probed here: pytest 9.2.0, and git 2.50.1 through rule 150's
 runner. No Odoo or container.
 
@@ -120,7 +121,7 @@ passed | skipped}`, ids per ADR-0015, with no output. No layer renders the pin, 
 
 **Replay does not run it.** It reuses the recorded pin, and a flaky rung must not refuse a replay. It enters
 no prompt, `kind_hash` or cache key. **Not covered:** a rung red only on a tree earlier cards built, and
-`odoo-adaptation`'s new-module assumptions, so the note's Odoo item is answered only in part.
+`odoo-adaptation`'s new-module assumptions, so B82 is answered only in part.
 
 **Test (Gate A):** a red rung refuses with no row. Red and `skip` starts, and the pin says so. `if_exists`
 follows the path. A replay on a now-red base still runs.
@@ -177,7 +178,7 @@ open.
 
 ## Not decided here
 
-The test-first pairing gate (the note's item 1), depth limits, unknown cost, the declared-things test,
+The test-first pairing gate (B13), depth limits, unknown cost, the declared-things test,
 ADR-0010 item 6, the amendments ledger, and a green summary surviving a failed rework. How a held RED reads in
 the record, so it isn't counted a catch, is ADR-0015's.
 
