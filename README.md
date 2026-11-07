@@ -1,3 +1,6 @@
+> **Archived.** This repository is a read-only record of hearns' design. Live work moved to the private
+> repository `ckagiri/hearns` at `eb3b6b5`. Nothing here is being updated.
+
 # Harness — document index
 
 **Last updated:** 18 August 2026.
